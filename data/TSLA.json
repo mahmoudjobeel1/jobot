@@ -1,0 +1,35 @@
+[
+  {
+    "date": "3/5/2026, 11:43:31 PM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 405.55,
+    "rsi": 44.97,
+    "macdHistogram": 0.1742,
+    "summary": "TSLA in consolidation phase with emerging bullish momentum signals offset by fundamental headwinds and technical resistance above current levels.",
+    "priceTarget": "$420.00",
+    "stopLoss": "$385.00"
+  },
+  {
+    "date": "3/5/2026, 11:45:41 PM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 405.55,
+    "rsi": 44.97,
+    "macdHistogram": 0.1742,
+    "summary": "TSLA maintains consolidation pattern with neutral technicals and mixed fundamentals, no change from previous HOLD stance",
+    "priceTarget": "$420.00",
+    "stopLoss": "$395.00"
+  },
+  {
+    "date": "3/6/2026, 12:00:00 AM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 405.55,
+    "rsi": 44.97,
+    "macdHistogram": 0.1742,
+    "summary": "TSLA remains in consolidation with no change in technical setup or fundamental outlook from previous analysis.",
+    "priceTarget": null,
+    "stopLoss": "$395.00"
+  }
+]

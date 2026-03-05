@@ -1,0 +1,46 @@
+[
+  {
+    "date": "3/5/2026, 11:43:01 PM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 260.29,
+    "rsi": 43.61,
+    "macdHistogram": -0.8351,
+    "summary": "AAPL in consolidation mode with mixed technicals near oversold levels, holding above key support with selective analyst backing despite Mag 7 headwinds.",
+    "priceTarget": "$267.50",
+    "stopLoss": "$254.00"
+  },
+  {
+    "date": "3/5/2026, 11:45:09 PM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 260.29,
+    "rsi": 43.61,
+    "macdHistogram": -0.8351,
+    "summary": "AAPL continues range-bound trading with RSI approaching oversold while MACD remains bearish, maintaining hold stance with tight risk management.",
+    "priceTarget": "$267.00",
+    "stopLoss": "$255.00"
+  },
+  {
+    "date": "3/5/2026, 11:59:25 PM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 260.29,
+    "rsi": 43.61,
+    "macdHistogram": -0.8351,
+    "summary": "AAPL maintaining range-bound consolidation with RSI nearing oversold but MACD bearish, holding defensive stance with tight stops.",
+    "priceTarget": null,
+    "stopLoss": "$255.00"
+  },
+  {
+    "date": "3/6/2026, 12:48:46 AM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 260.29,
+    "rsi": 43.61,
+    "macdHistogram": -0.8351,
+    "summary": "AAPL holding consolidation pattern with unchanged technicals, maintaining defensive stance with tight risk management as RSI approaches oversold.",
+    "priceTarget": null,
+    "stopLoss": "$256.50"
+  }
+]

@@ -1,0 +1,35 @@
+[
+  {
+    "date": "3/5/2026, 11:43:21 PM",
+    "decision": "HOLD",
+    "confidence": "Low",
+    "price": 183.34,
+    "rsi": 47.66,
+    "macdHistogram": -0.7549,
+    "summary": "NVDA showing neutral technical posture with price below key moving averages and mixed momentum signals warranting cautious hold stance.",
+    "priceTarget": null,
+    "stopLoss": "$175.00"
+  },
+  {
+    "date": "3/5/2026, 11:45:30 PM",
+    "decision": "HOLD",
+    "confidence": "Low",
+    "price": 183.34,
+    "rsi": 47.66,
+    "macdHistogram": -0.7549,
+    "summary": "NVDA remains in neutral technical territory with persistent bearish momentum signals and below-average volume supporting continued cautious hold stance.",
+    "priceTarget": null,
+    "stopLoss": "$175.00"
+  },
+  {
+    "date": "3/5/2026, 11:59:44 PM",
+    "decision": "HOLD",
+    "confidence": "Low",
+    "price": 183.34,
+    "rsi": 47.66,
+    "macdHistogram": -0.7549,
+    "summary": "NVDA maintains neutral technical posture with continued bearish momentum signals and below-average volume justifying extended cautious hold position.",
+    "priceTarget": null,
+    "stopLoss": "$175.00"
+  }
+]
