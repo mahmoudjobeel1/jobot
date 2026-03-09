@@ -1,35 +1,17 @@
 [
   {
-    "date": "3/5/2026, 11:43:41 PM",
+    "date": "3/10/2026, 1:42:41 AM",
     "decision": "HOLD",
     "confidence": "Medium",
-    "price": 218.94,
-    "rsi": 53.79,
-    "macdHistogram": 2.1594,
-    "summary": "AMZN consolidating between moving averages with improving MACD momentum but lacking volume conviction and specific catalysts.",
-    "priceTarget": "$225.50",
-    "stopLoss": "$208.00"
-  },
-  {
-    "date": "3/5/2026, 11:45:50 PM",
-    "decision": "HOLD",
-    "confidence": "Medium",
-    "price": 218.94,
-    "rsi": 53.79,
-    "macdHistogram": 2.1594,
-    "summary": "AMZN continues consolidation with neutral technicals and low volume, maintaining sideways trading range between key moving averages.",
-    "priceTarget": null,
-    "stopLoss": "$208.00"
-  },
-  {
-    "date": "3/6/2026, 12:00:11 AM",
-    "decision": "HOLD",
-    "confidence": "Medium",
-    "price": 218.94,
-    "rsi": 53.79,
-    "macdHistogram": 2.1594,
-    "summary": "AMZN maintains consolidation pattern with neutral technicals and low volume, continuing sideways drift between moving averages.",
-    "priceTarget": null,
-    "stopLoss": "$206.00"
+    "price": 213.49,
+    "rsi": 47.66,
+    "macdHistogram": 1.9076,
+    "summary": "AMZN held at small loss with technical momentum improving and positive robotaxi developments supporting recovery potential.",
+    "priceTarget": "$230.00",
+    "stopLoss": "$200.00",
+    "qty": 8.0819,
+    "avgCost": 222.16,
+    "unrealizedPL": -70.0700729999999,
+    "unrealizedPLPct": -3.9025927259632645
   }
 ]

@@ -1,35 +1,17 @@
 [
   {
-    "date": "3/5/2026, 11:43:31 PM",
+    "date": "3/10/2026, 1:44:29 AM",
     "decision": "HOLD",
     "confidence": "Medium",
-    "price": 405.55,
-    "rsi": 44.97,
-    "macdHistogram": 0.1742,
-    "summary": "TSLA in consolidation phase with emerging bullish momentum signals offset by fundamental headwinds and technical resistance above current levels.",
+    "price": 398.68,
+    "rsi": 42.18,
+    "macdHistogram": -0.0993,
+    "summary": "TSLA showing oversold technical conditions but facing operational headwinds with chip shortages and competitive pressure from other EV makers.",
     "priceTarget": "$420.00",
-    "stopLoss": "$385.00"
-  },
-  {
-    "date": "3/5/2026, 11:45:41 PM",
-    "decision": "HOLD",
-    "confidence": "Medium",
-    "price": 405.55,
-    "rsi": 44.97,
-    "macdHistogram": 0.1742,
-    "summary": "TSLA maintains consolidation pattern with neutral technicals and mixed fundamentals, no change from previous HOLD stance",
-    "priceTarget": "$420.00",
-    "stopLoss": "$395.00"
-  },
-  {
-    "date": "3/6/2026, 12:00:00 AM",
-    "decision": "HOLD",
-    "confidence": "Medium",
-    "price": 405.55,
-    "rsi": 44.97,
-    "macdHistogram": 0.1742,
-    "summary": "TSLA remains in consolidation with no change in technical setup or fundamental outlook from previous analysis.",
-    "priceTarget": null,
-    "stopLoss": "$395.00"
+    "stopLoss": "$360.00",
+    "qty": 0,
+    "avgCost": 0,
+    "unrealizedPL": 0,
+    "unrealizedPLPct": 0
   }
 ]

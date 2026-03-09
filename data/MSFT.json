@@ -1,35 +1,17 @@
 [
   {
-    "date": "3/5/2026, 11:43:11 PM",
+    "date": "3/10/2026, 1:43:10 AM",
     "decision": "HOLD",
     "confidence": "Medium",
-    "price": 410.68,
-    "rsi": 48.37,
-    "macdHistogram": 3.9306,
-    "summary": "MSFT showing technical stabilization near $410 but remains vulnerable to broader tech sector headwinds and regulatory concerns.",
-    "priceTarget": "$425.00",
-    "stopLoss": "$395.00"
-  },
-  {
-    "date": "3/5/2026, 11:45:19 PM",
-    "decision": "HOLD",
-    "confidence": "Medium",
-    "price": 410.68,
-    "rsi": 48.37,
-    "macdHistogram": 3.9306,
-    "summary": "MSFT maintaining consolidation around $410 with neutral technicals but facing continued regulatory headwinds in AI sector.",
-    "priceTarget": "$425.00",
-    "stopLoss": "$395.00"
-  },
-  {
-    "date": "3/5/2026, 11:59:35 PM",
-    "decision": "HOLD",
-    "confidence": "Medium",
-    "price": 410.68,
-    "rsi": 48.37,
-    "macdHistogram": 3.9306,
-    "summary": "MSFT holding consolidation pattern near $410 with improving short-term momentum but facing AI regulatory headwinds and broader tech sector pressures.",
-    "priceTarget": "$420.00",
-    "stopLoss": "$395.00"
+    "price": 409.41,
+    "rsi": 47.6,
+    "macdHistogram": 4.1806,
+    "summary": "MSFT holding near cost basis with AI partnership catalyst but needs volume confirmation to break above 50-day resistance.",
+    "priceTarget": "$440.00",
+    "stopLoss": "$390.00",
+    "qty": 2.66,
+    "avgCost": 412.24,
+    "unrealizedPL": -7.527799999999958,
+    "unrealizedPLPct": -0.6864933048709451
   }
 ]

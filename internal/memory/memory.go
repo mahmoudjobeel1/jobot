@@ -3,6 +3,7 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,32 +14,33 @@ import (
 
 // Entry represents a single historical analysis record stored in memory.
 type Entry struct {
-	Date          string   `json:"date"`
-	Decision      string   `json:"decision"`
-	Confidence    string   `json:"confidence"`
-	Price         float64  `json:"price"`
-	RSI           *float64 `json:"rsi"`
-	MACDHistogram *float64 `json:"macdHistogram"`
-	Summary       string   `json:"summary"`
-	PriceTarget   *string  `json:"priceTarget"`
-	StopLoss      *string  `json:"stopLoss"`
+	Date            string   `json:"date"`
+	Decision        string   `json:"decision"`
+	Confidence      string   `json:"confidence"`
+	Price           float64  `json:"price"`
+	RSI             *float64 `json:"rsi"`
+	MACDHistogram   *float64 `json:"macdHistogram"`
+	Summary         string   `json:"summary"`
+	PriceTarget     *string  `json:"priceTarget"`
+	StopLoss        *string  `json:"stopLoss"`
+	// Portfolio fields
+	Qty             float64  `json:"qty"`
+	AvgCost         float64  `json:"avgCost"`
+	UnrealizedPL    float64  `json:"unrealizedPL"`
+	UnrealizedPLPct float64  `json:"unrealizedPLPct"`
 }
 
 // dataDir returns the path to the data directory relative to the project root.
 func dataDir() string {
-	// Resolve project root: two levels up from this source file's directory.
-	// At runtime we use the executable's location or a well-known env var.
-	// Fallback: use the CWD-relative "data" directory.
 	if dir := os.Getenv("JOBOT_DATA_DIR"); dir != "" {
 		return dir
 	}
-	// When running from the project root (normal usage), "data" is correct.
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
 		return "data"
 	}
-	// filename is …/internal/memory/memory.go → go up 3 levels
-	root := filepath.Join(filepath.Dir(filename), "..", "..", "..")
+	// filepath.Dir gives …/internal/memory — go up 2 levels to project root
+	root := filepath.Join(filepath.Dir(filename), "..", "..")
 	return filepath.Join(root, "data")
 }
 
@@ -106,9 +108,22 @@ func BuildMemoryContext(ticker string, limit int) string {
 		if e.MACDHistogram != nil {
 			macdStr = fmt.Sprintf("%g", *e.MACDHistogram)
 		}
+
+		plStr := ""
+		if e.Qty > 0 {
+			plSign := "+"
+			if e.UnrealizedPL < 0 {
+				plSign = ""
+			}
+			plStr = fmt.Sprintf(" | Position: %.4g shares @ $%.2f | P&L: %s$%.2f (%s%.2f%%)",
+				e.Qty, e.AvgCost,
+				plSign, math.Abs(e.UnrealizedPL),
+				plSign, math.Abs(e.UnrealizedPLPct))
+		}
+
 		lines = append(lines, fmt.Sprintf(
-			"[%s] Decision: %s (%s) @ $%g | RSI: %s | MACD hist: %s | Summary: %s",
-			e.Date, e.Decision, e.Confidence, e.Price, rsiStr, macdStr, e.Summary,
+			"[%s] Decision: %s (%s) @ $%g | RSI: %s | MACD hist: %s%s | Summary: %s",
+			e.Date, e.Decision, e.Confidence, e.Price, rsiStr, macdStr, plStr, e.Summary,
 		))
 	}
 	return strings.Join(lines, "\n")

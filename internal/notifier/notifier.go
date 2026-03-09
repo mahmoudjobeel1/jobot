@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -67,6 +68,26 @@ func macdHistStr(ind analyst.IndicatorSnapshot) string {
 	return fmt.Sprintf("%g", *ind.MACDHistogram)
 }
 
+func plStr(result analyst.AnalysisResult) string {
+	if result.Qty == 0 {
+		return "No position"
+	}
+	sign := "+"
+	if result.UnrealizedPL < 0 {
+		sign = ""
+	}
+	return fmt.Sprintf("%s$%.2f (%s%.2f%%)",
+		sign, math.Abs(result.UnrealizedPL),
+		sign, math.Abs(result.UnrealizedPLPct))
+}
+
+func positionStr(result analyst.AnalysisResult) string {
+	if result.Qty == 0 {
+		return "No position"
+	}
+	return fmt.Sprintf("%.4g shares @ $%.2f", result.Qty, result.AvgCost)
+}
+
 // FormatConsole formats the result as a human-readable console block.
 func FormatConsole(result analyst.AnalysisResult) string {
 	emoji := decisionEmoji[result.Decision]
@@ -74,6 +95,8 @@ func FormatConsole(result analyst.AnalysisResult) string {
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("  ┌─ %s %s — %s (%s confidence)", emoji, result.Ticker, result.Decision, result.Confidence))
 	lines = append(lines, fmt.Sprintf("  │  Price:      $%g", result.Price))
+	lines = append(lines, fmt.Sprintf("  │  Position:   %s", positionStr(result)))
+	lines = append(lines, fmt.Sprintf("  │  P&L:        %s", plStr(result)))
 	lines = append(lines, fmt.Sprintf("  │  RSI:        %s", rsiStr(result.Indicators)))
 	lines = append(lines, fmt.Sprintf("  │  MACD hist:  %s", macdHistStr(result.Indicators)))
 	lines = append(lines, fmt.Sprintf("  │  Trend 60d:  %s", trend60dStr(result.Indicators)))
@@ -99,6 +122,9 @@ func formatDiscord(result analyst.AnalysisResult) discordPayload {
 	var parts []string
 	parts = append(parts, fmt.Sprintf("## %s **%s** — `%s` _(%s confidence)_", emoji, result.Ticker, result.Decision, result.Confidence))
 	parts = append(parts, fmt.Sprintf("**Price:** $%g", result.Price))
+	if result.Qty > 0 {
+		parts = append(parts, fmt.Sprintf("**Position:** %s | **P&L:** %s", positionStr(result), plStr(result)))
+	}
 	parts = append(parts, fmt.Sprintf("**RSI:** %s | **MACD Hist:** %s | **60d:** %s",
 		rsiStr(result.Indicators), macdHistStr(result.Indicators), trend60dStr(result.Indicators)))
 	if t := nullableStr(result.PriceTarget, ""); t != "" {
@@ -119,6 +145,9 @@ func formatTelegram(result analyst.AnalysisResult) string {
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%s <b>%s</b> — <code>%s</code> (%s)", emoji, result.Ticker, result.Decision, result.Confidence))
 	parts = append(parts, fmt.Sprintf("💵 <b>Price:</b> $%g", result.Price))
+	if result.Qty > 0 {
+		parts = append(parts, fmt.Sprintf("📊 <b>Position:</b> %s | <b>P&L:</b> %s", positionStr(result), plStr(result)))
+	}
 	parts = append(parts, fmt.Sprintf("📈 RSI: %s | MACD: %s | 60d: %s",
 		rsiStr(result.Indicators), macdHistStr(result.Indicators), trend60dStr(result.Indicators)))
 	if t := nullableStr(result.PriceTarget, ""); t != "" {

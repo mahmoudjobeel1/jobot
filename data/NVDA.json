@@ -1,35 +1,17 @@
 [
   {
-    "date": "3/5/2026, 11:43:21 PM",
+    "date": "3/10/2026, 1:43:47 AM",
     "decision": "HOLD",
-    "confidence": "Low",
-    "price": 183.34,
-    "rsi": 47.66,
-    "macdHistogram": -0.7549,
-    "summary": "NVDA showing neutral technical posture with price below key moving averages and mixed momentum signals warranting cautious hold stance.",
-    "priceTarget": null,
-    "stopLoss": "$175.00"
-  },
-  {
-    "date": "3/5/2026, 11:45:30 PM",
-    "decision": "HOLD",
-    "confidence": "Low",
-    "price": 183.34,
-    "rsi": 47.66,
-    "macdHistogram": -0.7549,
-    "summary": "NVDA remains in neutral technical territory with persistent bearish momentum signals and below-average volume supporting continued cautious hold stance.",
-    "priceTarget": null,
-    "stopLoss": "$175.00"
-  },
-  {
-    "date": "3/5/2026, 11:59:44 PM",
-    "decision": "HOLD",
-    "confidence": "Low",
-    "price": 183.34,
-    "rsi": 47.66,
-    "macdHistogram": -0.7549,
-    "summary": "NVDA maintains neutral technical posture with continued bearish momentum signals and below-average volume justifying extended cautious hold position.",
-    "priceTarget": null,
-    "stopLoss": "$175.00"
+    "confidence": "Medium",
+    "price": 182.65,
+    "rsi": 47.73,
+    "macdHistogram": -0.7873,
+    "summary": "NVDA held at small profit ahead of GTC conference with mixed technicals but potential AI catalyst upside.",
+    "priceTarget": "$190.00",
+    "stopLoss": "$170.00",
+    "qty": 1.4292,
+    "avgCost": 180.06,
+    "unrealizedPL": 3.701628000000005,
+    "unrealizedPLPct": 1.43840941908253
   }
 ]

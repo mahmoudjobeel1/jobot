@@ -15,22 +15,28 @@ import (
 	"jobot/internal/finnhub"
 	"jobot/internal/indicators"
 	"jobot/internal/memory"
+	"jobot/internal/portfolio"
 )
 
 // AnalysisResult is the structured output from one analysis cycle.
 type AnalysisResult struct {
-	Ticker      string     `json:"ticker"`
-	Timestamp   string     `json:"timestamp"`
-	Date        string     `json:"date"`
-	Price       float64    `json:"price"`
-	Decision    string     `json:"decision"`
-	Confidence  string     `json:"confidence"`
-	Reasoning   string     `json:"reasoning"`
-	KeyRisk     string     `json:"key_risk"`
-	PriceTarget *string    `json:"price_target"`
-	StopLoss    *string    `json:"stop_loss"`
-	Summary     string     `json:"summary"`
+	Ticker      string            `json:"ticker"`
+	Timestamp   string            `json:"timestamp"`
+	Date        string            `json:"date"`
+	Price       float64           `json:"price"`
+	Decision    string            `json:"decision"`
+	Confidence  string            `json:"confidence"`
+	Reasoning   string            `json:"reasoning"`
+	KeyRisk     string            `json:"key_risk"`
+	PriceTarget *string           `json:"price_target"`
+	StopLoss    *string           `json:"stop_loss"`
+	Summary     string            `json:"summary"`
 	Indicators  IndicatorSnapshot `json:"indicators"`
+	// Portfolio fields
+	Qty            float64  `json:"qty"`
+	AvgCost        float64  `json:"avg_cost"`
+	UnrealizedPL   float64  `json:"unrealized_pl"`
+	UnrealizedPLPct float64 `json:"unrealized_pl_pct"`
 }
 
 // IndicatorSnapshot stores the indicator values alongside the result.
@@ -140,7 +146,15 @@ func buildPrompt(ticker string, quote finnhub.Quote, candles indicators.Candles,
 
 	utcTime := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
 
-	return fmt.Sprintf(`You are a professional quantitative stock analyst. Analyze %s using all the data below and return a clear trading decision.
+	// Build portfolio context for this ticker
+	portfolioCtx := portfolio.BuildPortfolioContext(ticker, quote.C)
+
+	return fmt.Sprintf(`You are a professional quantitative stock analyst advising a retail investor on their EXISTING portfolio. Analyze %s using all the data below and return a clear trading decision.
+
+Your recommendation must account for the investor's current position — their cost basis, unrealized P&L, and position size. For example:
+- If the stock is well above cost basis, consider whether it's time to take profits.
+- If the stock is underwater, consider whether the thesis still holds or if it's better to cut losses.
+- A "BUY" means add to the existing position; "SELL" means reduce or exit; "HOLD" means keep as-is.
 
 ═══ LIVE MARKET DATA — %s ═══
 Ticker:         %s
@@ -149,6 +163,9 @@ Open/High/Low:  $%g / $%g / $%g
 Prev Close:     $%g
 Daily Change:   %s%% ($%s)
 60-day Trend:   %s
+
+═══ YOUR PORTFOLIO POSITION ═══
+%s
 
 ═══ TECHNICAL INDICATORS ═══
 RSI (14):       %s%s
@@ -170,7 +187,7 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
 {
   "decision": "BUY" | "SELL" | "HOLD",
   "confidence": "Low" | "Medium" | "High",
-  "reasoning": "2–4 sentences integrating technicals + news + memory context",
+  "reasoning": "2–4 sentences integrating technicals + news + portfolio P&L + memory context",
   "key_risk": "The single most important risk factor right now",
   "price_target": "$XX.XX or null",
   "stop_loss": "$XX.XX or null",
@@ -184,6 +201,7 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
 		quote.Pc,
 		dpStr, dStr,
 		trend60dStr,
+		portfolioCtx,
 		rsiStr, rsiLabel,
 		macdLine,
 		macdSignal,
@@ -198,7 +216,6 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
 }
 
 func formatVolume(v float64) string {
-	// Replicate JS toLocaleString() with comma thousands separator
 	n := int64(v)
 	s := fmt.Sprintf("%d", n)
 	if len(s) <= 3 {
@@ -248,6 +265,16 @@ func AnalyzeStock(ticker string, quote finnhub.Quote, candles indicators.Candles
 	}
 
 	now := time.Now()
+
+	// Enrich result with portfolio data
+	var qty, avgCost, unrealizedPL, unrealizedPLPct float64
+	if h := portfolio.Lookup(ticker); h != nil {
+		qty = h.Qty
+		avgCost = h.AvgCost
+		unrealizedPL = h.UnrealizedPL(quote.C)
+		unrealizedPLPct = h.UnrealizedPLPct(quote.C)
+	}
+
 	result := AnalysisResult{
 		Ticker:      ticker,
 		Timestamp:   now.UTC().Format(time.RFC3339),
@@ -268,18 +295,26 @@ func AnalyzeStock(ticker string, quote finnhub.Quote, candles indicators.Candles
 			MA200:         ind.MA200,
 			Trend60d:      ind.Trend60d,
 		},
+		Qty:             qty,
+		AvgCost:         avgCost,
+		UnrealizedPL:    unrealizedPL,
+		UnrealizedPLPct: unrealizedPLPct,
 	}
 
 	memEntry := memory.Entry{
-		Date:          result.Date,
-		Decision:      result.Decision,
-		Confidence:    result.Confidence,
-		Price:         result.Price,
-		RSI:           result.Indicators.RSI,
-		MACDHistogram: result.Indicators.MACDHistogram,
-		Summary:       result.Summary,
-		PriceTarget:   result.PriceTarget,
-		StopLoss:      result.StopLoss,
+		Date:            result.Date,
+		Decision:        result.Decision,
+		Confidence:      result.Confidence,
+		Price:           result.Price,
+		RSI:             result.Indicators.RSI,
+		MACDHistogram:   result.Indicators.MACDHistogram,
+		Summary:         result.Summary,
+		PriceTarget:     result.PriceTarget,
+		StopLoss:        result.StopLoss,
+		Qty:             qty,
+		AvgCost:         avgCost,
+		UnrealizedPL:    unrealizedPL,
+		UnrealizedPLPct: unrealizedPLPct,
 	}
 	if err := memory.AppendMemory(ticker, memEntry); err != nil {
 		fmt.Printf("  [Memory] Warning: could not save memory for %s: %v\n", ticker, err)

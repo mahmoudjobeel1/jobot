@@ -1,12 +1,14 @@
 package config
 
-var Tickers = []string{"AAPL", "MSFT", "NVDA", "TSLA", "AMZN"}
+import "jobot/internal/portfolio"
+
+var Tickers = portfolio.Tickers()
 
 const (
-	HistoryDays          = 120
-	NewsLimit            = 8
-	MemoryLimit          = 40
-	MemoryContextWindow  = 8
+	HistoryDays           = 120
+	NewsLimit             = 8
+	MemoryLimit           = 40
+	MemoryContextWindow   = 8
 	MinConfidenceToNotify = "Medium"
 )
 

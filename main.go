@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"jobot/internal/config"
 	"jobot/internal/finnhub"
 	"jobot/internal/notifier"
+	"jobot/internal/portfolio"
 )
 
 // isMarketOpen returns true if the current time is within NYSE market hours
@@ -35,6 +37,7 @@ type tickerResult struct {
 	ticker string
 	ok     bool
 	errMsg string
+	price  float64
 }
 
 func processTicker(ticker string) tickerResult {
@@ -49,25 +52,54 @@ func processTicker(ticker string) tickerResult {
 		return tickerResult{ticker: ticker, ok: false, errMsg: err.Error()}
 	}
 	notifier.Notify(result)
-	return tickerResult{ticker: ticker, ok: true}
+	return tickerResult{ticker: ticker, ok: true, price: data.Quote.C}
+}
+
+func printPortfolioSummary(prices map[string]float64) {
+	s := portfolio.Summary(prices)
+	plSign := "+"
+	if s.TotalPL < 0 {
+		plSign = ""
+	}
+	fmt.Println()
+	fmt.Println("  ╔═══════════════════════════════════════════╗")
+	fmt.Println("  ║           PORTFOLIO SUMMARY               ║")
+	fmt.Println("  ╠═══════════════════════════════════════════╣")
+	fmt.Printf("  ║  Cost Basis:    $%12.2f              ║\n", s.TotalCostBasis)
+	fmt.Printf("  ║  Market Value:  $%12.2f              ║\n", s.TotalMarketValue)
+	fmt.Printf("  ║  Total P&L:     %s$%10.2f (%s%.2f%%)  ║\n",
+		plSign, math.Abs(s.TotalPL), plSign, math.Abs(s.TotalPLPct))
+	fmt.Println("  ╚═══════════════════════════════════════════╝")
 }
 
 func runCycle() {
 	sep := strings.Repeat("═", 60)
 	fmt.Printf("\n%s\n", sep)
 	fmt.Printf("  STOCK AI AGENT — %s\n", time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT"))
-	fmt.Printf("  Tickers: %s\n", strings.Join(config.Tickers, ", "))
+	fmt.Printf("  Portfolio: %s\n", strings.Join(config.Tickers, ", "))
 	fmt.Printf("%s\n", sep)
+
+	// Print holdings table
+	fmt.Println("  Holdings:")
+	for _, h := range portfolio.Holdings {
+		fmt.Printf("    %-6s  %6.4g shares @ $%.2f  (cost basis: $%.2f)\n",
+			h.Ticker, h.Qty, h.AvgCost, h.CostBasis())
+	}
+	fmt.Println()
 
 	if os.Getenv("MARKET_HOURS_ONLY") == "true" && !isMarketOpen() {
 		fmt.Println("  [Scheduler] Market is closed — skipping.")
 		return
 	}
 
+	prices := make(map[string]float64)
 	var results []tickerResult
 	for i, ticker := range config.Tickers {
 		r := processTicker(ticker)
 		results = append(results, r)
+		if r.ok {
+			prices[r.ticker] = r.price
+		}
 		if i < len(config.Tickers)-1 {
 			time.Sleep(1200 * time.Millisecond)
 		}
@@ -81,6 +113,11 @@ func runCycle() {
 		} else {
 			failed = append(failed, r)
 		}
+	}
+
+	// Print portfolio summary if we got at least one price
+	if len(prices) > 0 {
+		printPortfolioSummary(prices)
 	}
 
 	fmt.Printf("\n  Cycle complete — %d/%d succeeded\n", ok, len(config.Tickers))
@@ -107,7 +144,7 @@ func main() {
 	fmt.Println("║          STOCK AI AGENT — Starting up                   ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Printf("  Schedule:  %s\n", schedule)
-	fmt.Printf("  Tickers:   %s\n\n", strings.Join(config.Tickers, ", "))
+	fmt.Printf("  Portfolio: %s\n\n", strings.Join(config.Tickers, ", "))
 
 	if os.Getenv("FINNHUB_API_KEY") == "" {
 		fmt.Fprintln(os.Stderr, "  FINNHUB_API_KEY missing")
