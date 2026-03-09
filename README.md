@@ -1,6 +1,6 @@
 # Jobot Agent
 
-An autonomous Node.js agent that monitors a list of US stock tickers, fetches live market data, computes technical indicators, and uses Claude AI to generate BUY / SELL / HOLD decisions on a cron schedule.
+An autonomous Go agent that monitors a list of US stock tickers, fetches live market data, computes technical indicators, and uses Claude AI to generate BUY / SELL / HOLD decisions on a cron schedule.
 
 Built to be extended — Discord and Telegram notifications are already wired up.
 
@@ -9,24 +9,24 @@ Built to be extended — Discord and Telegram notifications are already wired up
 ## Architecture
 
 ```
-src/
-├── index.js        Main entry point + cron scheduler
-├── config.js       Ticker list + behaviour settings
-├── finnhub.js      Fetches quotes, candles, and news from Finnhub
-├── indicators.js   Computes RSI, MACD, MA20/50/200 locally
-├── analyst.js      Builds prompt and calls Claude for decisions
-├── memory.js       Persists analysis history per ticker as JSON
-└── notifier.js     Sends decisions to console / Discord / Telegram
+main.go                     Main entry point + cron scheduler
+internal/
+├── config/config.go        Ticker list + behaviour settings
+├── finnhub/client.go       Fetches quotes, candles, and news from Finnhub
+├── indicators/indicators.go Computes RSI, MACD, MA20/50/200 locally
+├── analyst/analyst.go      Builds prompt and calls Claude for decisions
+├── memory/memory.go        Persists analysis history per ticker as JSON
+└── notifier/notifier.go    Sends decisions to console / Discord / Telegram
 
 data/
-└── AAPL.json       Auto-created memory files, one per ticker
+└── AAPL.json               Auto-created memory files, one per ticker
 ```
 
 ---
 
 ## Prerequisites
 
-- **Node.js 18+** (uses ES modules and top-level await)
+- **Go 1.22+**
 - **Finnhub API key** — free at [finnhub.io](https://finnhub.io) (60 calls/min free)
 - **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
 
@@ -37,7 +37,7 @@ data/
 ### 1. Install dependencies
 
 ```bash
-npm install
+go mod download
 ```
 
 ### 2. Configure environment
@@ -55,25 +55,26 @@ ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ### 3. Edit your ticker list
 
-Open `src/config.js` and edit the `TICKERS` array:
+Open `internal/config/config.go` and edit the `Tickers` slice:
 
-```js
-export const TICKERS = [
-  "AAPL",
-  "NVDA",
-  "MSFT",
-  // Add whatever you want here
-];
+```go
+var Tickers = []string{
+    "AAPL",
+    "NVDA",
+    "MSFT",
+    // Add whatever you want here
+}
 ```
 
 ### 4. Run
 
 ```bash
-# Production
-npm start
+# Build and run
+go run .
 
-# Development (auto-restarts on file change)
-npm run dev
+# Or build a binary first
+go build -o jobot .
+./jobot
 ```
 
 ---
@@ -82,16 +83,16 @@ npm run dev
 
 All runtime config lives in two places:
 
-### `src/config.js` — Static settings
+### `internal/config/config.go` — Static settings
 | Setting | Default | Description |
 |---|---|---|
-| `TICKERS` | 5 stocks | List of tickers to monitor |
-| `HISTORY_DAYS` | 120 | Days of candle history to fetch |
-| `NEWS_LIMIT` | 8 | Recent news articles per ticker |
-| `MEMORY_LIMIT` | 40 | Max stored analysis sessions per ticker |
-| `MEMORY_CONTEXT_WINDOW` | 8 | How many past sessions to include in AI prompt |
-| `NOTIFY_ON` | All | Which decisions trigger notifications |
-| `MIN_CONFIDENCE_TO_NOTIFY` | Medium | Minimum confidence to notify |
+| `Tickers` | 5 stocks | List of tickers to monitor |
+| `HistoryDays` | 120 | Days of candle history to fetch |
+| `NewsLimit` | 8 | Recent news articles per ticker |
+| `MemoryLimit` | 40 | Max stored analysis sessions per ticker |
+| `MemoryContextWindow` | 8 | How many past sessions to include in AI prompt |
+| `NotifyOn` | All | Which decisions trigger notifications |
+| `MinConfidenceToNotify` | Medium | Minimum confidence to notify |
 
 ### `.env` — Runtime settings
 | Variable | Default | Description |
