@@ -13,5 +13,20 @@
     "avgCost": 256.44,
     "unrealizedPL": 1.805999999999999,
     "unrealizedPLPct": 1.3414443924504749
+  },
+  {
+    "date": "3/11/2026, 2:53:16 AM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 260.83,
+    "rsi": 45.38,
+    "macdHistogram": -0.9796,
+    "summary": "Maintaining small AAPL position at modest 1.71% gain amid mixed technicals and conflicting fundamental signals.",
+    "priceTarget": "$270.00",
+    "stopLoss": "$250.00",
+    "qty": 0.525,
+    "avgCost": 256.44,
+    "unrealizedPL": 2.3047499999999927,
+    "unrealizedPLPct": 1.7119014194353404
   }
 ]

@@ -13,5 +13,35 @@
     "avgCost": 222.16,
     "unrealizedPL": -70.0700729999999,
     "unrealizedPLPct": -3.9025927259632645
+  },
+  {
+    "date": "3/11/2026, 2:48:58 AM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 214.33,
+    "rsi": 48.68,
+    "macdHistogram": 1.8261,
+    "summary": "AMZN held at small loss with continued MACD improvement and competitive win against Perplexity, awaiting volume confirmation for next move.",
+    "priceTarget": "$230.00",
+    "stopLoss": "$205.00",
+    "qty": 8.0819,
+    "avgCost": 222.16,
+    "unrealizedPL": -63.28127699999987,
+    "unrealizedPLPct": -3.5244868563197627
+  },
+  {
+    "date": "3/11/2026, 2:51:50 AM",
+    "decision": "HOLD",
+    "confidence": "Medium",
+    "price": 214.33,
+    "rsi": 48.68,
+    "macdHistogram": 1.8261,
+    "summary": "AMZN held at small loss with weakening momentum despite positive news, awaiting volume confirmation and break above 50-day MA.",
+    "priceTarget": null,
+    "stopLoss": "$205.00",
+    "qty": 8.0819,
+    "avgCost": 222.16,
+    "unrealizedPL": -63.28127699999987,
+    "unrealizedPLPct": -3.5244868563197627
   }
 ]

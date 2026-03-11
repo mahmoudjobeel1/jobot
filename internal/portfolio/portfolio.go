@@ -38,6 +38,7 @@ func (h Holding) MarketValue(currentPrice float64) float64 {
 
 
 var Holdings = []Holding{
+	{Ticker: "GLD", Qty: 0, AvgCost: 0},
 	{Ticker: "AMZN", Qty: 8.0819, AvgCost: 222.16},
 	{Ticker: "AMD", Qty: 8.02, AvgCost: 221.36},
 	{Ticker: "GOOG", Qty: 4.1518, AvgCost: 331.98},
