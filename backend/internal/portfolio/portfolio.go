@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"jobot/internal/store"
 )
 
 // Holding represents a single position in the portfolio.
@@ -64,8 +66,26 @@ func Tickers() []string {
 	return tickers
 }
 
-// Lookup returns the holding for a ticker, or nil if not found.
+// GetHoldings returns live holdings from the store (falls back to static Holdings
+// if the store has not been initialised yet).
+func GetHoldings() []Holding {
+	sh := store.GetHoldings()
+	if len(sh) == 0 {
+		return Holdings
+	}
+	out := make([]Holding, len(sh))
+	for i, s := range sh {
+		out[i] = Holding{Ticker: s.Ticker, Qty: s.Qty, AvgCost: s.AvgCost}
+	}
+	return out
+}
+
+// Lookup returns the live holding for a ticker from the store, falling back to
+// the static Holdings slice if the store is not yet initialised.
 func Lookup(ticker string) *Holding {
+	if sh := store.GetHolding(ticker); sh != nil {
+		return &Holding{Ticker: sh.Ticker, Qty: sh.Qty, AvgCost: sh.AvgCost}
+	}
 	for i := range Holdings {
 		if strings.EqualFold(Holdings[i].Ticker, ticker) {
 			return &Holdings[i]
@@ -85,7 +105,7 @@ type PortfolioSummary struct {
 // Summary computes portfolio-level totals given current prices keyed by ticker.
 func Summary(prices map[string]float64) PortfolioSummary {
 	var s PortfolioSummary
-	for _, h := range Holdings {
+	for _, h := range GetHoldings() {
 		price, ok := prices[h.Ticker]
 		if !ok {
 			continue

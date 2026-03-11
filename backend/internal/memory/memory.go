@@ -21,6 +21,7 @@ type Entry struct {
 	RSI             *float64 `json:"rsi"`
 	MACDHistogram   *float64 `json:"macdHistogram"`
 	Summary         string   `json:"summary"`
+	Reasoning       string   `json:"reasoning"`
 	PriceTarget     *string  `json:"priceTarget"`
 	StopLoss        *string  `json:"stopLoss"`
 	// Portfolio fields

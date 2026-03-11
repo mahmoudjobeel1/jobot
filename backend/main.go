@@ -11,10 +11,12 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"jobot/internal/analyst"
+	"jobot/internal/api"
 	"jobot/internal/config"
 	"jobot/internal/finnhub"
 	"jobot/internal/notifier"
 	"jobot/internal/portfolio"
+	"jobot/internal/store"
 )
 
 // isMarketOpen returns true if the current time is within NYSE market hours
@@ -81,7 +83,7 @@ func runCycle() {
 
 	// Print holdings table
 	fmt.Println("  Holdings:")
-	for _, h := range portfolio.Holdings {
+	for _, h := range portfolio.GetHoldings() {
 		fmt.Printf("    %-6s  %6.4g shares @ $%.2f  (cost basis: $%.2f)\n",
 			h.Ticker, h.Qty, h.AvgCost, h.CostBasis())
 	}
@@ -145,6 +147,23 @@ func main() {
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Printf("  Schedule:  %s\n", schedule)
 	fmt.Printf("  Portfolio: %s\n\n", strings.Join(config.Tickers, ", "))
+
+	// Initialise store (loads data/portfolio.json or seeds from Holdings)
+	seed := make([]store.Holding, len(portfolio.Holdings))
+	for i, h := range portfolio.Holdings {
+		seed[i] = store.Holding{Ticker: h.Ticker, Qty: h.Qty, AvgCost: h.AvgCost}
+	}
+	if err := store.Init(seed); err != nil {
+		fmt.Fprintf(os.Stderr, "  store init error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Start REST API server
+	apiPort := os.Getenv("API_PORT")
+	if apiPort == "" {
+		apiPort = "8080"
+	}
+	api.StartServer(":" + apiPort)
 
 	if os.Getenv("FINNHUB_API_KEY") == "" {
 		fmt.Fprintln(os.Stderr, "  FINNHUB_API_KEY missing")

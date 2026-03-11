@@ -278,7 +278,7 @@ func AnalyzeStock(ticker string, quote finnhub.Quote, candles indicators.Candles
 	result := AnalysisResult{
 		Ticker:      ticker,
 		Timestamp:   now.UTC().Format(time.RFC3339),
-		Date:        now.Local().Format("1/2/2006, 3:04:05 PM"),
+		Date:        now.UTC().Format(time.RFC3339),
 		Price:       quote.C,
 		Decision:    parsed.Decision,
 		Confidence:  parsed.Confidence,
@@ -309,6 +309,7 @@ func AnalyzeStock(ticker string, quote finnhub.Quote, candles indicators.Candles
 		RSI:             result.Indicators.RSI,
 		MACDHistogram:   result.Indicators.MACDHistogram,
 		Summary:         result.Summary,
+		Reasoning:       result.Reasoning,
 		PriceTarget:     result.PriceTarget,
 		StopLoss:        result.StopLoss,
 		Qty:             qty,
