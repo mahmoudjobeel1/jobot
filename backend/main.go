@@ -74,6 +74,19 @@ func printPortfolioSummary(prices map[string]float64) {
 	fmt.Println("  ╚═══════════════════════════════════════════╝")
 }
 
+func runWeeklySummary() {
+	fmt.Println("\n  [Weekly] Running multi-session reviews...")
+	for _, ticker := range config.Tickers {
+		if err := analyst.AnalyzeWeekly(ticker); err != nil {
+			fmt.Printf("  [Weekly] %s: %v\n", ticker, err)
+		} else {
+			fmt.Printf("  [Weekly] %s: done\n", ticker)
+		}
+		time.Sleep(800 * time.Millisecond)
+	}
+	fmt.Println("  [Weekly] All reviews complete.")
+}
+
 func runCycle() {
 	sep := strings.Repeat("═", 60)
 	fmt.Printf("\n%s\n", sep)
@@ -185,13 +198,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	weeklySchedule := os.Getenv("WEEKLY_CRON")
+	if weeklySchedule == "" {
+		weeklySchedule = "0 16 * * 5" // Friday 4pm ET
+	}
+
 	c := cron.New(cron.WithLocation(loc))
 	if _, err := c.AddFunc(schedule, runCycle); err != nil {
 		fmt.Fprintf(os.Stderr, "  Invalid cron schedule %q: %v\n", schedule, err)
 		os.Exit(1)
 	}
+	if _, err := c.AddFunc(weeklySchedule, runWeeklySummary); err != nil {
+		fmt.Fprintf(os.Stderr, "  Invalid weekly cron %q: %v\n", weeklySchedule, err)
+		os.Exit(1)
+	}
 	c.Start()
-	fmt.Printf("  Agent is running. Cron: %s\n\n", schedule)
+	fmt.Printf("  Agent is running. Cron: %s | Weekly: %s\n\n", schedule, weeklySchedule)
 
 	// Block forever
 	select {}

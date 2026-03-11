@@ -56,7 +56,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 
 type holdingResponse struct {
 	store.Holding
-	LatestPrediction *memory.Entry `json:"latest_prediction,omitempty"`
+	LatestPrediction *memory.Entry       `json:"latest_prediction,omitempty"`
+	WeeklySummary    *memory.WeeklyEntry `json:"weekly_summary,omitempty"`
 }
 
 type portfolioResponse struct {
@@ -82,7 +83,8 @@ func handlePortfolio(w http.ResponseWriter, r *http.Request) {
 			e := entries[len(entries)-1]
 			latest = &e
 		}
-		resp.Holdings[i] = holdingResponse{Holding: h, LatestPrediction: latest}
+		weekly, _ := memory.LoadWeekly(h.Ticker)
+		resp.Holdings[i] = holdingResponse{Holding: h, LatestPrediction: latest, WeeklySummary: weekly}
 	}
 
 	jsonResponse(w, http.StatusOK, resp)

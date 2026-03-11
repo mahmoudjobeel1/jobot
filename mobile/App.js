@@ -253,6 +253,7 @@ export default function App() {
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACCENT} />}
         >
+          <PortfolioSummary holdings={positions} />
           <Text style={styles.sectionLabel}>POSITIONS</Text>
           {positions.map((h) => <HoldingCard key={h.ticker} h={h} stops={stops} />)}
 
@@ -380,31 +381,91 @@ export default function App() {
   );
 }
 
+// ─── PortfolioSummary bar ─────────────────────────────────────────────────────
+function PortfolioSummary({ holdings }) {
+  let costBasis = 0, marketValue = 0, priceCount = 0;
+  for (const h of holdings) {
+    costBasis += h.qty * h.avg_cost;
+    if (h.latest_prediction?.price) {
+      marketValue += h.qty * h.latest_prediction.price;
+      priceCount++;
+    }
+  }
+  const pl    = marketValue - costBasis;
+  const plPct = costBasis > 0 ? (pl / costBasis) * 100 : 0;
+  const plColor = pl >= 0 ? GREEN : RED;
+  const sign  = pl >= 0 ? '+' : '';
+
+  return (
+    <View style={styles.summaryBar}>
+      <View style={styles.summaryCol}>
+        <Text style={styles.summaryLabel}>Cost Basis</Text>
+        <Text style={styles.summaryValue}>${fmt(costBasis)}</Text>
+      </View>
+      <View style={styles.summaryDivider} />
+      <View style={styles.summaryCol}>
+        <Text style={styles.summaryLabel}>Mkt Value{priceCount < holdings.length ? '*' : ''}</Text>
+        <Text style={styles.summaryValue}>${fmt(marketValue)}</Text>
+      </View>
+      <View style={styles.summaryDivider} />
+      <View style={styles.summaryCol}>
+        <Text style={styles.summaryLabel}>Unrealized P&L</Text>
+        <Text style={[styles.summaryValue, { color: plColor }]}>
+          {sign}${fmt(Math.abs(pl))} ({sign}{fmt(Math.abs(plPct))}%)
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 // ─── HoldingCard ──────────────────────────────────────────────────────────────
 function HoldingCard({ h, stops }) {
   const [expanded, setExpanded] = useState(false);
-  const p = h.latest_prediction;
+  const p  = h.latest_prediction;
   const myStops = stops.filter((s) => s.ticker === h.ticker);
   const decisionColor = DECISION_COLOR[p?.decision] || SUBTEXT;
 
+  // P&L using last known price from prediction
+  const lastPrice   = p?.price ?? null;
+  const pl          = lastPrice != null ? (lastPrice - h.avg_cost) * h.qty : null;
+  const plPct       = lastPrice != null && h.avg_cost > 0 ? ((lastPrice - h.avg_cost) / h.avg_cost) * 100 : null;
+  const plColor     = pl != null ? (pl >= 0 ? GREEN : RED) : SUBTEXT;
+  const plSign      = pl != null && pl >= 0 ? '+' : '';
+
+  // Trend badge
+  const trend = p?.trend60d ?? null;
+  const trendColor = trend != null ? (trend >= 0 ? GREEN : RED) : SUBTEXT;
+  const trendLabel = trend != null ? `${trend >= 0 ? '+' : ''}${fmt(trend, 1)}% 60d` : null;
+
   return (
     <View style={styles.card}>
-      {/* Row 1: ticker + qty */}
+      {/* Row 1: ticker + trend badge */}
       <View style={styles.cardRow}>
         <Text style={styles.cardTicker}>{h.ticker}</Text>
-        <Text style={styles.cardQty}>{fmt(h.qty, 4)} shares</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {trendLabel && (
+            <View style={[styles.trendBadge, { borderColor: trendColor }]}>
+              <Text style={[styles.trendText, { color: trendColor }]}>{trendLabel}</Text>
+            </View>
+          )}
+          <Text style={styles.cardQty}>{fmt(h.qty, 4)} sh</Text>
+        </View>
       </View>
 
-      {/* Row 2: avg cost + cost basis */}
+      {/* Row 2: avg cost + P&L */}
       <View style={styles.cardRow}>
-        <Text style={styles.cardSub}>Avg cost ${fmt(h.avg_cost)}</Text>
-        <Text style={styles.cardSub}>Basis ${fmt(h.qty * h.avg_cost)}</Text>
+        <Text style={styles.cardSub}>Avg ${fmt(h.avg_cost)} · Basis ${fmt(h.qty * h.avg_cost)}</Text>
+        {pl != null && (
+          <Text style={[styles.plText, { color: plColor }]}>
+            {plSign}${fmt(Math.abs(pl))} ({plSign}{fmt(Math.abs(plPct))}%)
+          </Text>
+        )}
       </View>
 
       {/* Prediction block */}
       {p ? (
         <View style={styles.predBlock}>
-          {/* Decision + confidence + price */}
+          {/* Decision + confidence + last price */}
           <View style={styles.cardRow}>
             <View style={[styles.decisionBadge, { backgroundColor: decisionColor + '22', borderColor: decisionColor }]}>
               <Text style={[styles.decisionText, { color: decisionColor }]}>{p.decision}</Text>
@@ -415,19 +476,10 @@ function HoldingCard({ h, stops }) {
             <Text style={styles.cardSub}>${fmt(p.price)}</Text>
           </View>
 
-          {/* Summary always visible */}
-          {p.summary ? (
-            <Text style={styles.summaryText}>{p.summary}</Text>
-          ) : null}
-
           {/* Reasoning — collapsible */}
           {p.reasoning ? (
             <>
-              {expanded ? (
-                <Text style={styles.reasoningText}>{p.reasoning}</Text>
-              ) : (
-                <Text style={styles.reasoningText} numberOfLines={2}>{p.reasoning}</Text>
-              )}
+              <Text style={styles.reasoningText} numberOfLines={expanded ? undefined : 2}>{p.reasoning}</Text>
               <TouchableOpacity onPress={() => setExpanded((v) => !v)}>
                 <Text style={styles.expandBtn}>{expanded ? 'Show less ▲' : 'View full reasoning ▼'}</Text>
               </TouchableOpacity>
@@ -437,17 +489,15 @@ function HoldingCard({ h, stops }) {
           {/* Price target + AI stop */}
           <View style={[styles.cardRow, { marginTop: 6 }]}>
             {p.priceTarget ? <Text style={styles.targetText}>Target {p.priceTarget}</Text> : null}
-            {p.stopLoss ? <Text style={styles.aiStopText}>AI stop {p.stopLoss}</Text> : null}
+            {p.stopLoss    ? <Text style={styles.aiStopText}>AI stop {p.stopLoss}</Text>    : null}
           </View>
 
-          {/* Predicted at (UTC stored, shown in device local time) */}
-          <Text style={styles.predDate}>
-            Predicted at {new Date(p.date).toLocaleString()}
-          </Text>
+          <Text style={styles.predDate}>Predicted at {new Date(p.date).toLocaleString()}</Text>
         </View>
       ) : (
         <Text style={[styles.cardSub, { marginTop: 8 }]}>No prediction yet</Text>
       )}
+
 
       {/* Active stop-loss badges */}
       {myStops.length > 0 && (
@@ -517,12 +567,24 @@ const styles = StyleSheet.create({
   scroll: { padding: 16, paddingBottom: 40 },
   sectionLabel: { color: SUBTEXT, fontSize: 11, fontWeight: '600', letterSpacing: 1, marginBottom: 8 },
 
+  // Portfolio summary bar
+  summaryBar: { flexDirection: 'row', backgroundColor: CARD, borderRadius: 10, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: BORDER },
+  summaryCol: { flex: 1, alignItems: 'center' },
+  summaryDivider: { width: 1, backgroundColor: BORDER, marginVertical: 2 },
+  summaryLabel: { color: SUBTEXT, fontSize: 10, fontWeight: '600', letterSpacing: 0.5, marginBottom: 4 },
+  summaryValue: { color: TEXT, fontSize: 13, fontWeight: '700' },
+
   card: { backgroundColor: CARD, borderRadius: 10, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: BORDER },
   stopCard: { backgroundColor: CARD, borderRadius: 10, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: RED + '55' },
   cardRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   cardTicker: { color: TEXT, fontSize: 16, fontWeight: '700' },
   cardQty: { color: ACCENT, fontSize: 14, fontWeight: '600' },
   cardSub: { color: SUBTEXT, fontSize: 13 },
+
+  // P&L + trend
+  plText: { fontSize: 13, fontWeight: '700' },
+  trendBadge: { borderWidth: 1, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 1 },
+  trendText: { fontSize: 11, fontWeight: '700' },
 
   predBlock: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: BORDER },
   decisionBadge: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 },
@@ -531,9 +593,21 @@ const styles = StyleSheet.create({
   summaryText: { color: TEXT, fontSize: 13, marginTop: 6, lineHeight: 18 },
   reasoningText: { color: SUBTEXT, fontSize: 12, marginTop: 4, lineHeight: 18 },
   expandBtn: { color: ACCENT, fontSize: 12, fontWeight: '600', marginTop: 4 },
+  keyRiskRow: { flexDirection: 'row', marginTop: 6, backgroundColor: RED + '11', borderRadius: 6, padding: 6 },
+  keyRiskLabel: { color: RED, fontSize: 11, fontWeight: '800' },
+  keyRiskText: { color: RED + 'cc', fontSize: 11, flex: 1, lineHeight: 16 },
   targetText: { color: GREEN, fontSize: 12, fontWeight: '600' },
   aiStopText: { color: YELLOW, fontSize: 12, fontWeight: '600' },
   predDate: { color: SUBTEXT + '80', fontSize: 11, marginTop: 6 },
+
+  // Weekly summary
+  weeklyBlock: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: BORDER },
+  weeklyTitle: { color: SUBTEXT, fontSize: 12, fontWeight: '700' },
+  weeklyDominant: { fontSize: 12, fontWeight: '700' },
+  weeklyText: { color: TEXT, fontSize: 12, lineHeight: 17, marginTop: 4 },
+  themeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 },
+  themeBadge: { backgroundColor: ACCENT + '22', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  themeText: { color: ACCENT, fontSize: 11, fontWeight: '600' },
 
   stopBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   stopBadge: { backgroundColor: RED + '22', borderWidth: 1, borderColor: RED + '55', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },

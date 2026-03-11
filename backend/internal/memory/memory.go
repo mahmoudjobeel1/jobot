@@ -22,6 +22,8 @@ type Entry struct {
 	MACDHistogram   *float64 `json:"macdHistogram"`
 	Summary         string   `json:"summary"`
 	Reasoning       string   `json:"reasoning"`
+	KeyRisk         string   `json:"keyRisk"`
+	Trend60d        *float64 `json:"trend60d"`
 	PriceTarget     *string  `json:"priceTarget"`
 	StopLoss        *string  `json:"stopLoss"`
 	// Portfolio fields
@@ -29,6 +31,47 @@ type Entry struct {
 	AvgCost         float64  `json:"avgCost"`
 	UnrealizedPL    float64  `json:"unrealizedPL"`
 	UnrealizedPLPct float64  `json:"unrealizedPLPct"`
+}
+
+// WeeklyEntry stores the result of a weekly multi-session review.
+type WeeklyEntry struct {
+	GeneratedAt     string   `json:"generated_at"`
+	Outlook         string   `json:"outlook"`
+	DominantDecision string  `json:"dominant_decision"`
+	Pattern         string   `json:"pattern"`
+	KeyThemes       []string `json:"key_themes"`
+}
+
+func weeklyFilePath(ticker string) string {
+	return filepath.Join(dataDir(), strings.ToUpper(ticker)+"_weekly.json")
+}
+
+// LoadWeekly reads the latest weekly summary for a ticker.
+func LoadWeekly(ticker string) (*WeeklyEntry, error) {
+	data, err := os.ReadFile(weeklyFilePath(ticker))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var e WeeklyEntry
+	if err := json.Unmarshal(data, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// SaveWeekly persists a weekly summary entry.
+func SaveWeekly(ticker string, e WeeklyEntry) error {
+	if err := ensureDataDir(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(weeklyFilePath(ticker), data, 0o644)
 }
 
 // dataDir returns the path to the data directory relative to the project root.

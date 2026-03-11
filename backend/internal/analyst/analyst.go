@@ -67,6 +67,55 @@ func fmtFloat(f *float64, def string) string {
 	return fmt.Sprintf("%g", *f)
 }
 
+// buildSectorContext loads last-known prices and decisions for sector peers.
+func buildSectorContext(ticker string) string {
+	sector, peers := config.SectorOf(ticker)
+	if sector == "" {
+		return "No sector peers identified."
+	}
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Sector: %s", sector))
+	sameDir := 0
+	total := 0
+	for _, peer := range peers {
+		if strings.EqualFold(peer, ticker) {
+			continue
+		}
+		entries, _ := memory.LoadMemory(peer)
+		if len(entries) == 0 {
+			continue
+		}
+		last := entries[len(entries)-1]
+		trend := "flat"
+		if last.Trend60d != nil {
+			if *last.Trend60d > 1 {
+				trend = fmt.Sprintf("+%.1f%%", *last.Trend60d)
+				sameDir++
+			} else if *last.Trend60d < -1 {
+				trend = fmt.Sprintf("%.1f%%", *last.Trend60d)
+				sameDir++
+			}
+		}
+		total++
+		lines = append(lines, fmt.Sprintf("  %-6s last $%g → %s (%s) | 60d: %s", peer, last.Price, last.Decision, last.Confidence, trend))
+	}
+	if total > 1 && sameDir == total {
+		lines = append(lines, "  ⚠ All peers trending same direction — likely sector-wide move, not ticker-specific.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// weeklyContext returns a short summary block from the stored weekly entry (if any).
+func weeklyContext(ticker string) string {
+	w, _ := memory.LoadWeekly(ticker)
+	if w == nil {
+		return "No weekly review available yet."
+	}
+	themes := strings.Join(w.KeyThemes, ", ")
+	return fmt.Sprintf("[Weekly review %s] Dominant: %s | %s | Themes: %s | Outlook: %s",
+		w.GeneratedAt[:10], w.DominantDecision, w.Pattern, themes, w.Outlook)
+}
+
 func buildPrompt(ticker string, quote finnhub.Quote, candles indicators.Candles, news []finnhub.NewsItem, memoryContext string) string {
 	ind := indicators.ComputeAll(candles)
 
@@ -148,6 +197,8 @@ func buildPrompt(ticker string, quote finnhub.Quote, candles indicators.Candles,
 
 	// Build portfolio context for this ticker
 	portfolioCtx := portfolio.BuildPortfolioContext(ticker, quote.C)
+	sectorCtx    := buildSectorContext(ticker)
+	weeklyCtx    := weeklyContext(ticker)
 
 	return fmt.Sprintf(`You are a professional quantitative stock analyst advising a retail investor on their EXISTING portfolio. Analyze %s using all the data below and return a clear trading decision.
 
@@ -155,6 +206,7 @@ Your recommendation must account for the investor's current position — their c
 - If the stock is well above cost basis, consider whether it's time to take profits.
 - If the stock is underwater, consider whether the thesis still holds or if it's better to cut losses.
 - A "BUY" means add to the existing position; "SELL" means reduce or exit; "HOLD" means keep as-is.
+- If sector peers are all moving in the same direction, weight sector macro over ticker-specific signals.
 
 ═══ LIVE MARKET DATA — %s ═══
 Ticker:         %s
@@ -177,6 +229,12 @@ MACD Histogram: %s
 %s
 Volume:         %s
 
+═══ SECTOR PEERS (same-sector correlation) ═══
+%s
+
+═══ WEEKLY MULTI-SESSION REVIEW ═══
+%s
+
 ═══ RECENT NEWS & SENTIMENT ═══
 %s
 
@@ -187,7 +245,7 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
 {
   "decision": "BUY" | "SELL" | "HOLD",
   "confidence": "Low" | "Medium" | "High",
-  "reasoning": "2–4 sentences integrating technicals + news + portfolio P&L + memory context",
+  "reasoning": "2–4 sentences integrating technicals + news + portfolio P&L + sector context + memory",
   "key_risk": "The single most important risk factor right now",
   "price_target": "$XX.XX or null",
   "stop_loss": "$XX.XX or null",
@@ -210,6 +268,8 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
 		priceVsMA(ind.MA50, "MA50 "),
 		priceVsMA(ind.MA200, "MA200"),
 		volumeNote,
+		sectorCtx,
+		weeklyCtx,
 		newsBlock,
 		memoryContext,
 	)
@@ -310,6 +370,8 @@ func AnalyzeStock(ticker string, quote finnhub.Quote, candles indicators.Candles
 		MACDHistogram:   result.Indicators.MACDHistogram,
 		Summary:         result.Summary,
 		Reasoning:       result.Reasoning,
+		KeyRisk:         result.KeyRisk,
+		Trend60d:        result.Indicators.Trend60d,
 		PriceTarget:     result.PriceTarget,
 		StopLoss:        result.StopLoss,
 		Qty:             qty,
@@ -333,3 +395,89 @@ func min(a, b int) int {
 
 // Ensure fmtFloat is used (it's a helper exposed for potential tests).
 var _ = fmtFloat
+
+// weeklyClaudeResponse matches the JSON for the weekly review call.
+type weeklyClaudeResponse struct {
+	Outlook          string   `json:"outlook"`
+	DominantDecision string   `json:"dominant_decision"`
+	Pattern          string   `json:"pattern"`
+	KeyThemes        []string `json:"key_themes"`
+}
+
+// AnalyzeWeekly runs a multi-session review using all stored memory entries
+// for a ticker and persists the result to a separate weekly summary file.
+func AnalyzeWeekly(ticker string) error {
+	entries, err := memory.LoadMemory(ticker)
+	if err != nil || len(entries) < 3 {
+		return fmt.Errorf("not enough history for weekly review of %s (have %d entries)", ticker, len(entries))
+	}
+
+	// Format all entries as a numbered list
+	var lines []string
+	for i, e := range entries {
+		trend := "N/A"
+		if e.Trend60d != nil {
+			trend = fmt.Sprintf("%+.1f%%", *e.Trend60d)
+		}
+		lines = append(lines, fmt.Sprintf(
+			"%d. [%s] %s (%s) @ $%g | 60d: %s | Risk: %s | %s",
+			i+1, e.Date[:10], e.Decision, e.Confidence, e.Price, trend, e.KeyRisk, e.Summary,
+		))
+	}
+	history := strings.Join(lines, "\n")
+
+	prompt := fmt.Sprintf(`You are a senior portfolio analyst performing a WEEKLY MULTI-SESSION REVIEW of %s.
+
+Below are %d analysis sessions recorded over the past weeks. Each entry is one 15-minute analysis cycle during market hours.
+
+FULL SESSION HISTORY:
+%s
+
+Identify:
+1. The dominant trend direction across all sessions
+2. Consistency of BUY/SELL/HOLD decisions — is the model flip-flopping or stable?
+3. Recurring risk themes
+4. A forward-looking weekly outlook
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+{
+  "outlook": "2-3 sentence forward-looking weekly outlook",
+  "dominant_decision": "BUY" | "SELL" | "HOLD",
+  "pattern": "1 sentence on decision consistency and trend",
+  "key_themes": ["theme1", "theme2", "theme3"]
+}`, ticker, len(entries), history)
+
+	client := anthropic.NewClient(option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")))
+	msg, err := client.Messages.New(context.Background(), anthropic.MessageNewParams{
+		Model:     anthropic.F(anthropic.Model("claude-sonnet-4-20250514")),
+		MaxTokens: anthropic.F(int64(512)),
+		Messages: anthropic.F([]anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		}),
+	})
+	if err != nil {
+		return fmt.Errorf("weekly claude error for %s: %w", ticker, err)
+	}
+
+	var rawParts []string
+	for _, block := range msg.Content {
+		if block.Type == "text" {
+			rawParts = append(rawParts, block.Text)
+		}
+	}
+	rawText := strings.TrimSpace(strings.NewReplacer("```json", "", "```", "").Replace(strings.Join(rawParts, "")))
+
+	var parsed weeklyClaudeResponse
+	if err := json.Unmarshal([]byte(rawText), &parsed); err != nil {
+		return fmt.Errorf("weekly parse error for %s: %w", ticker, err)
+	}
+
+	entry := memory.WeeklyEntry{
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		Outlook:          parsed.Outlook,
+		DominantDecision: parsed.DominantDecision,
+		Pattern:          parsed.Pattern,
+		KeyThemes:        parsed.KeyThemes,
+	}
+	return memory.SaveWeekly(ticker, entry)
+}
