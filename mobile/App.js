@@ -759,6 +759,6 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: 12, marginTop: 28 },
   cancelBtn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: BORDER },
   cancelText: { color: SUBTEXT, fontWeight: '700' },
-  submitBtn: { flex: 2, paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: GREEN },
+  submitBtn: { flex: 2, padding: 14, borderRadius: 12, alignItems: 'center', backgroundColor: GREEN },
   submitText: { color: '#fff', fontWeight: '800', fontSize: 15 },
 });
