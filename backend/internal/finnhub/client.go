@@ -133,6 +133,15 @@ func FetchQuote(ticker string) (Quote, error) {
 	return q, nil
 }
 
+// FetchCandlesMonths fetches OHLCV candle data from Yahoo Finance for a given number of months.
+func FetchCandlesMonths(ticker string, months int) (indicators.Candles, error) {
+	rawURL := fmt.Sprintf(
+		"https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=%dmo",
+		ticker, months,
+	)
+	return fetchYahoo(ticker, rawURL)
+}
+
 // FetchCandles fetches OHLCV candle data from Yahoo Finance.
 func FetchCandles(ticker string) (indicators.Candles, error) {
 	months := (config.HistoryDays + 29) / 30 // ceil division
@@ -140,7 +149,10 @@ func FetchCandles(ticker string) (indicators.Candles, error) {
 		"https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=%dmo",
 		ticker, months,
 	)
+	return fetchYahoo(ticker, rawURL)
+}
 
+func fetchYahoo(ticker, rawURL string) (indicators.Candles, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return indicators.Candles{}, err
@@ -170,29 +182,23 @@ func FetchCandles(ticker string) (indicators.Candles, error) {
 	}
 
 	r := yr.Chart.Result[0]
-	ohlcv := struct {
-		Open   []float64
-		High   []float64
-		Low    []float64
-		Close  []float64
-		Volume []float64
-	}{}
+	var open, high, low, close_, volume []float64
 	if len(r.Indicators.Quote) > 0 {
 		q := r.Indicators.Quote[0]
-		ohlcv.Open = q.Open
-		ohlcv.High = q.High
-		ohlcv.Low = q.Low
-		ohlcv.Close = q.Close
-		ohlcv.Volume = q.Volume
+		open = q.Open
+		high = q.High
+		low = q.Low
+		close_ = q.Close
+		volume = q.Volume
 	}
 
 	return indicators.Candles{
 		T: r.Timestamp,
-		O: ohlcv.Open,
-		H: ohlcv.High,
-		L: ohlcv.Low,
-		C: ohlcv.Close,
-		V: ohlcv.Volume,
+		O: open,
+		H: high,
+		L: low,
+		C: close_,
+		V: volume,
 		S: "ok",
 	}, nil
 }
