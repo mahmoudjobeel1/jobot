@@ -6,14 +6,15 @@ import (
 
 // Indicators holds all computed technical indicators for a ticker.
 type Indicators struct {
-	RSI     *float64    `json:"rsi"`
-	MACD    *MACDResult `json:"macd"`
-	MA20    *float64    `json:"ma20"`
-	MA50    *float64    `json:"ma50"`
-	MA200   *float64    `json:"ma200"`
-	AvgVol  *int64      `json:"avgVol"`
-	CurVol  *float64    `json:"curVol"`
-	Trend60d *float64   `json:"trend60d"`
+	RSI      *float64    `json:"rsi"`
+	MACD     *MACDResult `json:"macd"`
+	MA20     *float64    `json:"ma20"`
+	MA50     *float64    `json:"ma50"`
+	MA200    *float64    `json:"ma200"`
+	AvgVol   *int64      `json:"avgVol"`
+	CurVol   *float64    `json:"curVol"`
+	Trend60d *float64    `json:"trend60d"`
+	ATR14    *float64    `json:"atr14"`
 }
 
 // Candles holds the OHLCV data from Yahoo Finance.
@@ -144,6 +145,35 @@ func CalcAvgVolume(volumes []float64, period int) *int64 {
 	return &result
 }
 
+// CalcATR computes the Average True Range using Wilder's smoothing method.
+// Returns nil when there is insufficient data.
+func CalcATR(highs, lows, closes []float64, period int) *float64 {
+	n := len(closes)
+	if n < period+1 || len(highs) != n || len(lows) != n {
+		return nil
+	}
+	trs := make([]float64, n-1)
+	for i := 1; i < n; i++ {
+		hl := highs[i] - lows[i]
+		hpc := math.Abs(highs[i] - closes[i-1])
+		lpc := math.Abs(lows[i] - closes[i-1])
+		trs[i-1] = math.Max(hl, math.Max(hpc, lpc))
+	}
+	if len(trs) < period {
+		return nil
+	}
+	var seed float64
+	for i := 0; i < period; i++ {
+		seed += trs[i]
+	}
+	atr := seed / float64(period)
+	for i := period; i < len(trs); i++ {
+		atr = (atr*float64(period-1) + trs[i]) / float64(period)
+	}
+	result := roundTo(atr, 4)
+	return &result
+}
+
 // ComputeAll computes all technical indicators from the candle data.
 func ComputeAll(candles Candles) Indicators {
 	closes := candles.C
@@ -156,6 +186,7 @@ func ComputeAll(candles Candles) Indicators {
 		MA50:   CalcSMA(closes, 50),
 		MA200:  CalcSMA(closes, 200),
 		AvgVol: CalcAvgVolume(volumes, 20),
+		ATR14:  CalcATR(candles.H, candles.L, closes, 14),
 	}
 
 	if len(volumes) > 0 {

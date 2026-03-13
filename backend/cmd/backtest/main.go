@@ -4,7 +4,7 @@
 //
 //	go run ./cmd/backtest -ticker AAPL
 //	go run ./cmd/backtest -all
-//	go run ./cmd/backtest -ticker NVDA -months 24 -hold 10 -capital 10000
+//	go run ./cmd/backtest -ticker NVDA -months 24 -hold 10 -minhold 2 -capital 10000
 package main
 
 import (
@@ -27,9 +27,13 @@ func main() {
 
 	tickerFlag := flag.String("ticker", "", "Ticker to backtest (e.g. AAPL)")
 	allFlag := flag.Bool("all", false, "Backtest all portfolio tickers")
-	months := flag.Int("months", 24, "Months of historical data to fetch (default: 24)")
-	hold := flag.Int("hold", 10, "Max hold days before forced exit (default: 10)")
-	capital := flag.Float64("capital", 10_000, "Initial capital in USD (default: 10000)")
+	months   := flag.Int("months", 24, "Months of historical data to fetch (default: 24)")
+	hold     := flag.Int("hold", 10, "Max hold days before forced exit (default: 10)")
+	minhold  := flag.Int("minhold", 2, "Min hold days before a SELL signal is respected (default: 2)")
+	atrMult := flag.Float64("atr", 2.0, "Stop-loss ATR multiple: exit if price drops N×ATR14 from entry, 0=off (default: 2.0)")
+	trail   := flag.Float64("trail", 1.5, "Trailing stop ATR multiple: once up 10%+, trail at peak-N×ATR14, 0=off (default: 1.5)")
+	extend  := flag.Float64("extend", 2.0, "Hold multiplier when 60d trend is strong, 0=off (default: 2.0)")
+	capital  := flag.Float64("capital", 10_000, "Initial capital in USD (default: 10000)")
 	flag.Parse()
 
 	if !*allFlag && *tickerFlag == "" {
@@ -43,12 +47,16 @@ func main() {
 	}
 
 	cfg := backtester.Config{
-		MaxHoldDays:    *hold,
-		InitialCapital: *capital,
+		MaxHoldDays:             *hold,
+		MinHoldDays:             *minhold,
+		StopLossATRMultiple:     *atrMult,
+		TrailingStopATRMultiple: *trail,
+		TrendExtendFactor:       *extend,
+		InitialCapital:          *capital,
 	}
 
-	fmt.Printf("\n  Backtest  |  %d months of data  |  max hold %d days  |  capital $%.0f\n",
-		*months, *hold, *capital)
+	fmt.Printf("\n  Backtest  |  %d months  |  hold %d–%d days  |  stop %.1fx ATR  |  trail %.1fx ATR  |  extend %.1fx  |  capital $%.0f\n",
+		*months, *minhold, *hold, *atrMult, *trail, *extend, *capital)
 
 	for i, ticker := range tickers {
 		fmt.Printf("\n  [%d/%d] Fetching %s...\n", i+1, len(tickers), ticker)

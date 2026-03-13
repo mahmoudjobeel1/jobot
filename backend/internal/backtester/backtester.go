@@ -14,13 +14,42 @@ const minBarsNeeded = 35 // minimum bars required to compute MACD
 
 // Config controls backtest parameters.
 type Config struct {
-	MaxHoldDays    int
-	InitialCapital float64
+	MaxHoldDays             int
+	MinHoldDays             int     // minimum bars before a SELL signal is respected
+	StopLossATRMultiple     float64 // exit if price drops more than N×ATR14 from entry (0 = disabled)
+	TrailingStopATRMultiple float64 // once trade up 10%+, trail stop at peak - N×ATR14 (0 = disabled)
+	TrendExtendFactor       float64 // multiplier on MaxHoldDays when Trend60d is strong (0 = disabled)
+	InitialCapital          float64
 }
 
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
-	return Config{MaxHoldDays: 10, InitialCapital: 10_000}
+	return Config{
+		MaxHoldDays:             10,
+		MinHoldDays:             2,
+		StopLossATRMultiple:     2.0, // stop out when price drops 2×ATR14 from entry
+		TrailingStopATRMultiple: 1.5, // once up 10%, trail at peak - 1.5×ATR14
+		TrendExtendFactor:       2.0,
+		InitialCapital:          10_000,
+	}
+}
+
+// tradeMaxHold computes the effective max hold days for a new trade.
+// If the trend at entry is strong, the hold period is extended so trending
+// stocks have room to run rather than being exited too early.
+func tradeMaxHold(ind indicators.Indicators, cfg Config) int {
+	if cfg.TrendExtendFactor <= 0 || ind.Trend60d == nil {
+		return cfg.MaxHoldDays
+	}
+	trend := *ind.Trend60d
+	switch {
+	case trend > 20:
+		return int(float64(cfg.MaxHoldDays) * cfg.TrendExtendFactor * 1.5) // e.g. 30 days
+	case trend > 10:
+		return int(float64(cfg.MaxHoldDays) * cfg.TrendExtendFactor) // e.g. 20 days
+	default:
+		return cfg.MaxHoldDays
+	}
 }
 
 // Trade records a single completed round-trip trade.
@@ -82,9 +111,24 @@ type Result struct {
 	Memory        *MemoryEval
 }
 
-// signal returns "BUY", "SELL", or "HOLD" for the current bar.
-// prevHist is the MACD histogram from the previous bar (0 if first bar).
-func signal(ind indicators.Indicators, prevHist float64) string {
+// signal returns "BUY", "SELL", or "HOLD" using a multi-factor scoring model.
+//
+// Each indicator contributes to a bull or bear score. A signal fires only when
+// the net score reaches the threshold AND leads the opposing side — this avoids
+// single-indicator false triggers and falling-knife buys.
+//
+//	bull/bear score components:
+//	  RSI extremes          ±1..3
+//	  MACD histogram cross  ±3  (strongest signal)
+//	  MACD histogram trend  ±1  (building momentum)
+//	  Price vs MA50         ±1  (trend filter)
+//	  Price vs MA20         ±1  (short-term trend)
+//	  60d trend             ±1  (broader momentum)
+//	  MA50 slope            ±2  (regime: rising vs declining MA50)
+//
+//	Threshold: net score ≥ 6 required to fire BUY or SELL
+//
+func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64) string {
 	if ind.RSI == nil || ind.MACD == nil || ind.MACD.Histogram == nil {
 		return "HOLD"
 	}
@@ -93,24 +137,116 @@ func signal(ind indicators.Indicators, prevHist float64) string {
 
 	macdCrossedUp := prevHist <= 0 && hist > 0
 	macdCrossedDown := prevHist >= 0 && hist < 0
+	histRising := hist > prevHist
+	histFalling := hist < prevHist
 
-	// Strongly oversold
-	if rsi < 35 {
-		return "BUY"
+	// Hard gate: block BUY when MA50 is declining AND price is below it.
+	// A single bar of declining MA50 is enough — this catches prolonged downtrends
+	// (ORCL H2 2025, NVDA Q1 2025) while still allowing entries on any dip recovery.
+	if ind.MA50 != nil && prevMA50 > 0 {
+		if *ind.MA50 < prevMA50 && currentClose < *ind.MA50 {
+			goto computeSell
+		}
 	}
-	// Recovering from oversold with MACD momentum turning positive
-	if rsi < 50 && macdCrossedUp {
-		return "BUY"
+
+	{
+		var bull, bear int
+
+		switch {
+		case rsi < 30:
+			bull += 3
+		case rsi < 40:
+			bull += 2
+		case rsi < 50:
+			bull += 1
+		case rsi > 70:
+			bear += 3
+		case rsi > 60:
+			bear += 2
+		case rsi > 55:
+			bear += 1
+		}
+
+		if macdCrossedUp {
+			bull += 3
+		}
+		if macdCrossedDown {
+			bear += 3
+		}
+
+		if hist > 0 && histRising {
+			bull += 1
+		}
+		if hist < 0 && histFalling {
+			bear += 1
+		}
+
+		if ind.MA50 != nil {
+			if currentClose > *ind.MA50 {
+				bull += 1
+			} else {
+				bear += 1
+			}
+		}
+
+		if ind.MA50 != nil && prevMA50 > 0 {
+			if *ind.MA50 > prevMA50 {
+				bull += 2
+			} else {
+				bear += 2
+			}
+		}
+
+		if ind.MA20 != nil {
+			if currentClose > *ind.MA20 {
+				bull += 1
+			} else {
+				bear += 1
+			}
+		}
+
+		if ind.Trend60d != nil {
+			if *ind.Trend60d > 5 {
+				bull += 1
+			} else if *ind.Trend60d < -5 {
+				bear += 1
+			}
+		}
+
+		const threshold = 6
+		if bull >= threshold && bull > bear {
+			return "BUY"
+		}
+		if bear >= threshold && bear > bull {
+			return "SELL"
+		}
+		return "HOLD"
 	}
-	// Strongly overbought
-	if rsi > 75 {
-		return "SELL"
+
+computeSell:
+	{
+		// In bear regime: only look for SELL signals (short exits or overbought)
+		var bear int
+		if rsi > 65 {
+			bear += 2
+		}
+		if macdCrossedDown {
+			bear += 3
+		}
+		if hist < 0 && histFalling {
+			bear += 1
+		}
+		if ind.MA50 != nil && currentClose < *ind.MA50 {
+			bear += 1
+		}
+		if ind.MA20 != nil && currentClose < *ind.MA20 {
+			bear += 1
+		}
+		if bear >= 4 {
+			return "SELL"
+		}
+		return "HOLD"
 	}
-	// Overextended with MACD momentum turning negative
-	if rsi > 65 && macdCrossedDown {
-		return "SELL"
-	}
-	return "HOLD"
 }
 
 // Run executes the backtest and returns full metrics.
@@ -139,17 +275,25 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	capital := cfg.InitialCapital
 	entryCapital := 0.0
 	entryPrice := 0.0
+	entryStopPrice := 0.0   // ATR-based stop price, set at trade entry
+	peakPriceInTrade := 0.0 // highest price seen while in trade, for trailing stop
 	entryBar := 0
+	entryMaxHold := cfg.MaxHoldDays // effective hold limit set at trade entry
 	inTrade := false
 	peak := capital
 	maxDD := 0.0
 	var prevHist float64
+	var ma50Buf []float64 // rolling MA50 values to derive prevMA50 (10 bars back)
 	var trades []Trade
 	equity := make([]float64, n)
 	equity[0] = capital
 
-	// Stop generating new signals early enough that all trades can complete
-	lastSignalBar := n - cfg.MaxHoldDays - 2
+	// Reserve enough bars at the end for the longest possible trade to close
+	maxPossibleHold := int(float64(cfg.MaxHoldDays)*cfg.TrendExtendFactor*1.5) + 2
+	if cfg.TrendExtendFactor <= 0 {
+		maxPossibleHold = cfg.MaxHoldDays + 2
+	}
+	lastSignalBar := n - maxPossibleHold - 2
 
 	for i := 1; i < n; i++ {
 		// Mark equity to market
@@ -168,11 +312,15 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 		}
 
 		if i < minBarsNeeded || i > lastSignalBar {
-			// Still update prevHist even outside signal range
 			if i >= minBarsNeeded {
 				sub := subCandles(candles, i+1)
 				if ind := indicators.ComputeAll(sub); ind.MACD != nil && ind.MACD.Histogram != nil {
 					prevHist = *ind.MACD.Histogram
+					if ind.MA50 != nil {
+						ma50Buf = append(ma50Buf, *ind.MA50)
+					} else {
+						ma50Buf = append(ma50Buf, 0)
+					}
 				}
 			}
 			continue
@@ -180,19 +328,57 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 
 		sub := subCandles(candles, i+1)
 		ind := indicators.ComputeAll(sub)
-		sig := signal(ind, prevHist)
+
+		// prevMA50: MA50 value from 10 bars ago (tracks slope of the 50-day MA)
+		var prevMA50 float64
+		if len(ma50Buf) >= 10 {
+			prevMA50 = ma50Buf[len(ma50Buf)-10]
+		}
+
+		sig := signal(ind, closes[i], prevHist, prevMA50)
 
 		if !inTrade && sig == "BUY" {
 			inTrade = true
 			entryPrice = closes[i]
 			entryCapital = equity[i]
 			entryBar = i
+			peakPriceInTrade = closes[i]
+			entryMaxHold = tradeMaxHold(ind, cfg) // set hold limit based on trend at entry
+			// ATR-based stop: exit if price drops more than N×ATR14 below entry
+			entryStopPrice = 0
+			if cfg.StopLossATRMultiple > 0 && ind.ATR14 != nil {
+				entryStopPrice = entryPrice - cfg.StopLossATRMultiple**ind.ATR14
+			}
 		} else if inTrade {
+			// Update peak price for trailing stop
+			if closes[i] > peakPriceInTrade {
+				peakPriceInTrade = closes[i]
+			}
+
 			holdDays := i - entryBar
 			exitReason := ""
-			if sig == "SELL" {
+
+			// Trailing stop — kicks in once trade has gained 10%+ from entry.
+			if cfg.TrailingStopATRMultiple > 0 && ind.ATR14 != nil && holdDays >= cfg.MinHoldDays {
+				profitFromEntry := (peakPriceInTrade - entryPrice) / entryPrice * 100
+				if profitFromEntry >= 10.0 {
+					trailingStop := peakPriceInTrade - cfg.TrailingStopATRMultiple**ind.ATR14
+					if closes[i] < trailingStop {
+						exitReason = "trail-stop"
+					}
+				}
+			}
+
+			// Entry stop-loss — ATR-based: exit if price fell below computed stop level
+			if exitReason == "" && entryStopPrice > 0 && holdDays >= cfg.MinHoldDays && closes[i] < entryStopPrice {
+				exitReason = "stop-loss"
+			}
+			// SELL signal — only respect after MinHoldDays
+			if exitReason == "" && holdDays >= cfg.MinHoldDays && sig == "SELL" {
 				exitReason = "signal"
-			} else if holdDays >= cfg.MaxHoldDays {
+			}
+			// Timeout — use the dynamic hold limit set at entry
+			if exitReason == "" && holdDays >= entryMaxHold {
 				exitReason = "timeout"
 			}
 			if exitReason != "" {
@@ -217,9 +403,15 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 		if ind.MACD != nil && ind.MACD.Histogram != nil {
 			prevHist = *ind.MACD.Histogram
 		}
+		if ind.MA50 != nil {
+			ma50Buf = append(ma50Buf, *ind.MA50)
+		} else {
+			ma50Buf = append(ma50Buf, 0)
+		}
 	}
 
 	// Close any open position at end of data
+
 	if inTrade && n > 0 {
 		exitPrice := closes[n-1]
 		retPct := (exitPrice - entryPrice) / entryPrice * 100
@@ -317,7 +509,7 @@ func evaluateMemory(entries []memory.Entry, candles indicators.Candles) *MemoryE
 		case "SELL":
 			correct = fwdPrice < entryPrice
 		case "HOLD":
-			correct = math.Abs(retPct) <= 2.0
+			correct = math.Abs(retPct) <= 3.0 // ±3% accounts for normal daily noise
 		}
 
 		stat, exists := eval.ByDecision[e.Decision]

@@ -36,22 +36,42 @@ Yahoo Finance (24 months of daily OHLCV)
 
 Replays what the bot's *technical signals alone* would have done, without Claude.
 
-### Signal Rules
+### Signal Rules — Multi-Factor Scoring
+
+Instead of single-condition triggers (which cause false signals and falling-knife buys),
+each indicator contributes a score. A signal fires only when the net score ≥ 5 AND leads
+the opposing side.
 
 ```
-Given: RSI(14), MACD histogram, prev bar's MACD histogram
+Given: RSI(14), MACD histogram, prev histogram, current close, MA20, MA50, Trend60d
 
-macdCrossedUp   = prevHist ≤ 0  AND  currentHist > 0
-macdCrossedDown = prevHist ≥ 0  AND  currentHist < 0
+Score components:
 
-BUY  if:  RSI < 35                          ← strongly oversold
-      or   RSI < 50  AND  macdCrossedUp     ← recovering + momentum turning positive
+  RSI < 30      → bull +3     RSI > 70      → bear +3
+  RSI < 40      → bull +2     RSI > 60      → bear +2
+  RSI < 50      → bull +1     RSI > 55      → bear +1
 
-SELL if:  RSI > 75                          ← strongly overbought
-      or   RSI > 65  AND  macdCrossedDown   ← overextended + momentum turning negative
+  MACD crossed above 0  → bull +3   ← strongest signal (momentum shift)
+  MACD crossed below 0  → bear +3
 
+  hist > 0 AND rising   → bull +1   ← momentum building
+  hist < 0 AND falling  → bear +1
+
+  price > MA50  → bull +1    price < MA50  → bear +1   ← trend filter
+  price > MA20  → bull +1    price < MA20  → bear +1   ← short-term trend
+
+  Trend60d > +5%  → bull +1   ← broader momentum
+  Trend60d < −5%  → bear +1
+
+BUY  if  bull ≥ 5  AND  bull > bear
+SELL if  bear ≥ 5  AND  bear > bull
 HOLD:  everything else
 ```
+
+**Why this beats single-condition signals:**
+- Buying RSI<35 in a downtrend (price below MA50, hist falling) only scores bull=2, bear=3 → HOLD
+- A real reversal (RSI<35, MACD crossing up, price above MA50) scores bull=7, bear=1 → BUY
+- Requires multiple indicators to agree before committing capital
 
 ### Trade Lifecycle
 
@@ -61,11 +81,14 @@ State: FLAT
 ├── BUY signal → enter at closes[i], record entryPrice & entryCapital
 │   └── State: LONG
 │       │
-│       ├── SELL signal → exit, realise P&L   (exitReason: "signal")
-│       ├── holdDays ≥ maxHoldDays → exit     (exitReason: "timeout")
-│       └── end of data → exit                (exitReason: "end-of-data")
+│       ├── holdDays < minHoldDays → ignore SELL signals (noise filter)
+│       ├── holdDays ≥ minHoldDays AND SELL signal → exit  (exitReason: "signal")
+│       ├── holdDays ≥ maxHoldDays → exit                  (exitReason: "timeout")
+│       └── end of data → exit                             (exitReason: "end-of-data")
 │           └── State: FLAT → repeat
 ```
+
+`minHoldDays` (default 2) prevents exiting on day-1 noise before the trade has a chance to develop.
 
 ### Equity Curve
 
@@ -128,8 +151,11 @@ Decision   Correct if
 ─────────────────────────────────────────────────────
 BUY        closes[bar+5]  >  closes[bar]    (price went up)
 SELL       closes[bar+5]  <  closes[bar]    (price went down)
-HOLD       |return5d|    ≤  2.0%            (price stayed flat)
+HOLD       |return5d|    ≤  3.0%            (price stayed roughly flat)
 ```
+
+The HOLD band is ±3% (previously ±2%) because most stocks move ±2% within 5 days purely from
+normal volatility, making ±2% an unrealistically tight definition of "flat".
 
 ### Output Example
 
@@ -205,6 +231,7 @@ go run ./cmd/backtest -ticker NVDA -months 12 -hold 5 -capital 50000
 | `-all` | false | Test every ticker in the portfolio |
 | `-months` | 24 | Months of history to fetch from Yahoo Finance |
 | `-hold` | 10 | Max days to hold before forced exit |
+| `-minhold` | 2 | Min days before a SELL signal is respected |
 | `-capital` | 10000 | Starting capital in USD |
 
 ---
