@@ -30,11 +30,12 @@ func main() {
 	months   := flag.Int("months", 24, "Months of historical data to fetch (default: 24)")
 	hold     := flag.Int("hold", 10, "Max hold days before forced exit (default: 10)")
 	minhold  := flag.Int("minhold", 2, "Min hold days before a SELL signal is respected (default: 2)")
-	atrMult := flag.Float64("atr", 2.5, "Stop-loss ATR multiple: exit if price drops N×ATR14 from entry, 0=off (default: 2.5)")
-	trail   := flag.Float64("trail", 1.5, "Trailing stop ATR multiple: once up 10%+, trail at peak-N×ATR14, 0=off (default: 1.5)")
-	extend  := flag.Float64("extend", 2.0, "Hold multiplier when 60d trend is strong, 0=off (default: 2.0)")
-	capital  := flag.Float64("capital", 10_000, "Initial capital in USD (default: 10000)")
-	nospy   := flag.Bool("nospy", false, "Disable SPY regime filter")
+	atrMult   := flag.Float64("atr", 2.5, "Stop-loss ATR multiple: exit if price drops N×ATR14 from entry, 0=off (default: 2.5)")
+	trail     := flag.Float64("trail", 1.5, "Trailing stop ATR multiple: once up 7%+, trail at peak-N×ATR14, 0=off (default: 1.5)")
+	extend    := flag.Float64("extend", 2.0, "Hold multiplier when 60d trend is strong, 0=off (default: 2.0)")
+	capital   := flag.Float64("capital", 10_000, "Initial capital in USD (default: 10000)")
+	nospy     := flag.Bool("nospy", false, "Disable SPY regime filter")
+	threshold := flag.Int("threshold", 0, "Bull/bear score threshold to fire a signal (default: 6, 0=use default)")
 	flag.Parse()
 
 	if !*allFlag && *tickerFlag == "" {
@@ -54,6 +55,7 @@ func main() {
 		TrailingStopATRMultiple: *trail,
 		TrendExtendFactor:       *extend,
 		InitialCapital:          *capital,
+		SignalThreshold:         *threshold,
 	}
 
 	spyLabel := "SPY regime ON"
@@ -70,8 +72,12 @@ func main() {
 		spyLabel = "SPY regime OFF"
 	}
 
-	fmt.Printf("\n  Backtest  |  %d months  |  hold %d–%d days  |  stop %.1fx ATR  |  trail %.1fx ATR  |  extend %.1fx  |  capital $%.0f  |  %s\n",
-		*months, *minhold, *hold, *atrMult, *trail, *extend, *capital, spyLabel)
+	thr := *threshold
+	if thr <= 0 {
+		thr = 7
+	}
+	fmt.Printf("\n  Backtest  |  %d months  |  hold %d–%d days  |  stop %.1fx ATR  |  trail %.1fx ATR  |  extend %.1fx  |  capital $%.0f  |  threshold %d  |  %s\n",
+		*months, *minhold, *hold, *atrMult, *trail, *extend, *capital, thr, spyLabel)
 
 	for i, ticker := range tickers {
 		fmt.Printf("\n  [%d/%d] Fetching %s...\n", i+1, len(tickers), ticker)

@@ -17,10 +17,11 @@ type Config struct {
 	MaxHoldDays             int
 	MinHoldDays             int     // minimum bars before a SELL signal is respected
 	StopLossATRMultiple     float64 // exit if price drops more than N×ATR14 from entry (0 = disabled)
-	TrailingStopATRMultiple float64 // once trade up 10%+, trail stop at peak - N×ATR14 (0 = disabled)
+	TrailingStopATRMultiple float64 // once trade up 7%+, trail stop at peak - N×ATR14 (0 = disabled)
 	TrendExtendFactor       float64 // multiplier on MaxHoldDays when Trend60d is strong (0 = disabled)
 	InitialCapital          float64
 	MarketCandles           *indicators.Candles // SPY candles for market regime filter (nil = disabled)
+	SignalThreshold         int                 // bull/bear score required to fire a signal (0 = use default 7)
 }
 
 // DefaultConfig returns sensible defaults.
@@ -128,13 +129,13 @@ type Result struct {
 //	  MA50 slope            ±2  (regime: rising vs declining MA50)
 //	  Price vs MA200        ±2  (long-term trend regime — v9)
 //
-//	Threshold: net score ≥ 7 required to fire BUY or SELL (raised from 6 in v9)
+//	Threshold: net score ≥ 6 required to fire BUY or SELL (configurable via Config.SignalThreshold)
 //
 //	Additional gates (v8):
 //	  Volume filter:  CurVol < 70% AvgVol → no BUY (thin-volume day)
 //	  Weekly MACD:    weekly histogram < 0 → no BUY (weekly momentum bearish)
 //
-func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64, weeklyHist *float64) string {
+func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64, weeklyHist *float64, threshold int) string {
 	if ind.RSI == nil || ind.MACD == nil || ind.MACD.Histogram == nil {
 		return "HOLD"
 	}
@@ -228,7 +229,6 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 			}
 		}
 
-		const threshold = 7
 		if bull >= threshold && bull > bear {
 			// Volume filter: skip thin-volume days — low participation means unreliable signal
 			if ind.CurVol != nil && ind.AvgVol != nil {
@@ -328,6 +328,12 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	r.StartDate = barDate(0)
 	r.EndDate = barDate(n - 1)
 
+	// Resolve signal threshold — default to 6 if unset
+	sigThreshold := cfg.SignalThreshold
+	if sigThreshold <= 0 {
+		sigThreshold = 6
+	}
+
 	// Build SPY regime map if market candles provided
 	var spyBull map[string]bool
 	if cfg.MarketCandles != nil {
@@ -411,7 +417,7 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 			weeklyHist = wm.Histogram
 		}
 
-		sig := signal(ind, closes[i], prevHist, prevMA50, weeklyHist)
+		sig := signal(ind, closes[i], prevHist, prevMA50, weeklyHist, sigThreshold)
 
 		// SPY regime filter: block new BUY entries when market is in a downtrend
 		if sig == "BUY" && spyBull != nil {
