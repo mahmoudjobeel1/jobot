@@ -16,6 +16,7 @@ import (
 	"jobot/internal/indicators"
 	"jobot/internal/memory"
 	"jobot/internal/portfolio"
+	"jobot/internal/store"
 )
 
 // AnalysisResult is the structured output from one analysis cycle.
@@ -47,6 +48,7 @@ type IndicatorSnapshot struct {
 	MA50          *float64 `json:"ma50"`
 	MA200         *float64 `json:"ma200"`
 	Trend60d      *float64 `json:"trend60d"`
+	ADX14         *float64 `json:"adx14"`
 }
 
 // claudeResponse matches the JSON the model is instructed to return.
@@ -114,6 +116,64 @@ func weeklyContext(ticker string) string {
 	themes := strings.Join(w.KeyThemes, ", ")
 	return fmt.Sprintf("[Weekly review %s] Dominant: %s | %s | Themes: %s | Outlook: %s",
 		w.GeneratedAt[:10], w.DominantDecision, w.Pattern, themes, w.Outlook)
+}
+
+// buildRegimeContext returns a one-line regime summary for the Claude prompt.
+func buildRegimeContext(ind indicators.Indicators, price float64) string {
+	regime := indicators.ClassifyRegime(ind, price)
+	adxStr := "N/A"
+	if ind.ADX14 != nil {
+		adxStr = fmt.Sprintf("%.1f", *ind.ADX14)
+	}
+	switch regime {
+	case indicators.RegimeTrending:
+		return fmt.Sprintf("REGIME: TRENDING (ADX=%s, price above MA200). Favor holding winners longer. Trailing stops preferred over timeouts.", adxStr)
+	case indicators.RegimeBearish:
+		return fmt.Sprintf("REGIME: BEARISH (price below MA200, MA50 declining). Avoid new BUY signals. Tighten stops on existing positions.")
+	default:
+		return fmt.Sprintf("REGIME: SIDEWAYS (ADX=%s). Use tighter profit targets. Higher conviction needed for BUY.", adxStr)
+	}
+}
+
+// buildTrailingStopContext returns prompt text about any active trailing stop for this ticker.
+// Returns empty string if no trailing stop is active.
+func buildTrailingStopContext(ticker string) string {
+	for _, s := range store.GetStops() {
+		if !s.IsTrailing || !strings.EqualFold(s.Ticker, ticker) {
+			continue
+		}
+		if s.Activated {
+			return fmt.Sprintf(
+				"TRAILING STOP ACTIVE: stop at $%.2f (trailing 1.5×ATR below peak of $%.2f). "+
+					"Do NOT recommend SELL based on time held. Let the trailing stop manage the exit. "+
+					"Only recommend SELL if you see fundamental deterioration the trailing stop won't catch.",
+				s.StopPrice, s.PeakPrice)
+		}
+		return fmt.Sprintf(
+			"STOP-LOSS ACTIVE: initial stop at $%.2f (entry $%.2f). "+
+				"Trailing mode activates once position gains %.1f%%. "+
+				"Do not recommend SELL just because the position has been held for several days.",
+			s.StopPrice, s.EntryPrice, s.ActivateAt)
+	}
+	return ""
+}
+
+// buildFastReentryContext returns prompt text if this ticker had a recent trail-stop exit
+// and current price conditions suggest a fast re-entry is reasonable.
+func buildFastReentryContext(ticker string, currentPrice float64) string {
+	exit := store.RecentTrailExit(ticker, 20)
+	if exit == nil {
+		return ""
+	}
+	// Guardrail: only suggest re-entry if price hasn't fallen far below exit
+	if currentPrice < exit.ExitPrice*0.95 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"FAST RE-ENTRY ELIGIBLE: A trailing stop exited this position recently at $%.2f "+
+			"(peak was $%.2f). Stock is still near exit level — a lower-conviction BUY is "+
+			"acceptable if price has pulled back to support and trend remains intact.",
+		exit.ExitPrice, exit.PeakPrice)
 }
 
 func buildPrompt(ticker string, quote finnhub.Quote, candles indicators.Candles, news []finnhub.NewsItem, memoryContext string) string {
@@ -196,9 +256,30 @@ func buildPrompt(ticker string, quote finnhub.Quote, candles indicators.Candles,
 	utcTime := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
 
 	// Build portfolio context for this ticker
-	portfolioCtx := portfolio.BuildPortfolioContext(ticker, quote.C)
-	sectorCtx    := buildSectorContext(ticker)
-	weeklyCtx    := weeklyContext(ticker)
+	portfolioCtx   := portfolio.BuildPortfolioContext(ticker, quote.C)
+	sectorCtx      := buildSectorContext(ticker)
+	weeklyCtx      := weeklyContext(ticker)
+	regimeCtx      := buildRegimeContext(ind, quote.C)
+	trailStopCtx   := buildTrailingStopContext(ticker)
+	fastReentryCtx := buildFastReentryContext(ticker, quote.C)
+
+	// Assemble optional context blocks
+	var optionalBlocks []string
+	if trailStopCtx != "" {
+		optionalBlocks = append(optionalBlocks, "═══ ACTIVE STOP ORDER ═══\n"+trailStopCtx)
+	}
+	if fastReentryCtx != "" {
+		optionalBlocks = append(optionalBlocks, "═══ RE-ENTRY SIGNAL ═══\n"+fastReentryCtx)
+	}
+	optionalSection := ""
+	if len(optionalBlocks) > 0 {
+		optionalSection = "\n\n" + strings.Join(optionalBlocks, "\n\n")
+	}
+
+	adx14Str := "N/A"
+	if ind.ADX14 != nil {
+		adx14Str = fmt.Sprintf("%g", *ind.ADX14)
+	}
 
 	return fmt.Sprintf(`You are a professional quantitative stock analyst advising a retail investor on their EXISTING portfolio. Analyze %s using all the data below and return a clear trading decision.
 
@@ -207,6 +288,7 @@ Your recommendation must account for the investor's current position — their c
 - If the stock is underwater, consider whether the thesis still holds or if it's better to cut losses.
 - A "BUY" means add to the existing position; "SELL" means reduce or exit; "HOLD" means keep as-is.
 - If sector peers are all moving in the same direction, weight sector macro over ticker-specific signals.
+- Respect the regime context below — TRENDING stocks deserve longer holds; BEARISH regime warrants caution.%s
 
 ═══ LIVE MARKET DATA — %s ═══
 Ticker:         %s
@@ -215,6 +297,9 @@ Open/High/Low:  $%g / $%g / $%g
 Prev Close:     $%g
 Daily Change:   %s%% ($%s)
 60-day Trend:   %s
+
+═══ MARKET REGIME ═══
+%s
 
 ═══ YOUR PORTFOLIO POSITION ═══
 %s
@@ -227,6 +312,7 @@ MACD Histogram: %s
 %s
 %s
 %s
+ADX (14):       %s  (>25 = trending, <20 = sideways)
 Volume:         %s
 
 ═══ SECTOR PEERS (same-sector correlation) ═══
@@ -252,6 +338,7 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
   "summary": "One concise sentence for memory storage"
 }`,
 		ticker,
+		optionalSection,
 		utcTime,
 		ticker,
 		quote.C,
@@ -259,6 +346,7 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
 		quote.Pc,
 		dpStr, dStr,
 		trend60dStr,
+		regimeCtx,
 		portfolioCtx,
 		rsiStr, rsiLabel,
 		macdLine,
@@ -267,6 +355,7 @@ Respond with ONLY a valid JSON object — no explanation, no markdown fences:
 		priceVsMA(ind.MA20, "MA20 "),
 		priceVsMA(ind.MA50, "MA50 "),
 		priceVsMA(ind.MA200, "MA200"),
+		adx14Str,
 		volumeNote,
 		sectorCtx,
 		weeklyCtx,
@@ -354,6 +443,7 @@ func AnalyzeStock(ticker string, quote finnhub.Quote, candles indicators.Candles
 			MA50:          ind.MA50,
 			MA200:         ind.MA200,
 			Trend60d:      ind.Trend60d,
+			ADX14:         ind.ADX14,
 		},
 		Qty:             qty,
 		AvgCost:         avgCost,

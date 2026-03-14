@@ -21,7 +21,9 @@ type Config struct {
 	TrendExtendFactor       float64 // multiplier on MaxHoldDays when Trend60d is strong (0 = disabled)
 	InitialCapital          float64
 	MarketCandles           *indicators.Candles // SPY candles for market regime filter (nil = disabled)
-	SignalThreshold         int                 // bull/bear score required to fire a signal (0 = use default 7)
+	SignalThreshold         int                 // bull/bear score required to fire a signal (0 = default 6)
+	FastReentryThreshold    int     // lower score threshold after trail-stop exit in uptrend (0 = default 4)
+	FastReentryWindowBars   int     // bars after trail-stop where fast re-entry applies (0 = default 20)
 }
 
 // DefaultConfig returns sensible defaults.
@@ -29,16 +31,17 @@ func DefaultConfig() Config {
 	return Config{
 		MaxHoldDays:             10,
 		MinHoldDays:             2,
-		StopLossATRMultiple:     2.5, // stop out when price drops 2.5×ATR14 from entry (v9: widened from 2.0)
-		TrailingStopATRMultiple: 1.5, // once up 7%, trail at peak - 1.5×ATR14
+		StopLossATRMultiple:     2.5,
+		TrailingStopATRMultiple: 1.5,
 		TrendExtendFactor:       2.0,
 		InitialCapital:          10_000,
 	}
 }
 
 // tradeMaxHold computes the effective max hold days for a new trade.
-// If the trend at entry is strong, the hold period is extended so trending
-// stocks have room to run rather than being exited too early.
+// In trending regime, the hold period is extended so trending stocks have room to run.
+// Note: once the trailing stop activates, timeout is disabled entirely — so this cap
+// only matters for trades that never reach the 7% profit level.
 func tradeMaxHold(ind indicators.Indicators, cfg Config) int {
 	if cfg.TrendExtendFactor <= 0 || ind.Trend60d == nil {
 		return cfg.MaxHoldDays
@@ -46,11 +49,24 @@ func tradeMaxHold(ind indicators.Indicators, cfg Config) int {
 	trend := *ind.Trend60d
 	switch {
 	case trend > 20:
-		return int(float64(cfg.MaxHoldDays) * cfg.TrendExtendFactor * 1.5) // e.g. 30 days
+		return int(float64(cfg.MaxHoldDays) * cfg.TrendExtendFactor * 1.5)
 	case trend > 10:
-		return int(float64(cfg.MaxHoldDays) * cfg.TrendExtendFactor) // e.g. 20 days
+		return int(float64(cfg.MaxHoldDays) * cfg.TrendExtendFactor)
 	default:
 		return cfg.MaxHoldDays
+	}
+}
+
+// signalSizeFactor returns the fraction of available capital to deploy based on signal strength.
+// High-conviction (score ≥8) gets full capital; marginal entries get less.
+func signalSizeFactor(score int) float64 {
+	switch {
+	case score >= 8:
+		return 1.00
+	case score >= 7:
+		return 0.85
+	default: // score == 6
+		return 0.65
 	}
 }
 
@@ -62,7 +78,7 @@ type Trade struct {
 	ExitPrice  float64
 	ReturnPct  float64
 	HoldDays   int
-	ExitReason string // "signal" | "timeout" | "end-of-data"
+	ExitReason string // "signal" | "timeout" | "trail-stop" | "stop-loss" | "end-of-data"
 }
 
 // MemoryDecision evaluates a single stored Claude decision against actual forward price.
@@ -70,7 +86,7 @@ type MemoryDecision struct {
 	Date      string
 	Decision  string
 	Price     float64
-	Price5d   float64 // actual price 5 trading days later
+	Price5d   float64
 	ReturnPct float64
 	Correct   bool
 }
@@ -86,7 +102,7 @@ type MemoryEval struct {
 	Total       int
 	Correct     int
 	AccuracyPct float64
-	AvgReturn5d float64            // avg return 5d after BUY decisions
+	AvgReturn5d float64
 	ByDecision  map[string]*DecisionStat
 	Details     []MemoryDecision
 }
@@ -97,47 +113,43 @@ type Result struct {
 	StartDate     string
 	EndDate       string
 	TotalBars     int
-	// Indicator-strategy simulation metrics
 	TotalTrades   int
 	WinningTrades int
 	LosingTrades  int
 	WinRate       float64
-	TotalReturn   float64 // pct vs initial capital
-	BuyHoldReturn float64 // pct
+	TotalReturn   float64
+	BuyHoldReturn float64
 	AvgWinPct     float64
 	AvgLossPct    float64
 	MaxDrawdownPct float64
 	SharpeRatio   float64
 	Trades        []Trade
-	// Claude decision accuracy from stored memory
 	Memory        *MemoryEval
 }
 
-// signal returns "BUY", "SELL", or "HOLD" using a multi-factor scoring model.
+// signal returns "BUY"/"SELL"/"HOLD" and the winning score using a multi-factor scoring model.
 //
-// Each indicator contributes to a bull or bear score. A signal fires only when
-// the net score reaches the threshold AND leads the opposing side — this avoids
-// single-indicator false triggers and falling-knife buys.
+// bull/bear score components:
 //
-//	bull/bear score components:
-//	  RSI extremes          ±1..3
-//	  MACD histogram cross  ±3  (strongest signal)
-//	  MACD histogram trend  ±1  (building momentum)
-//	  Price vs MA50         ±1  (trend filter)
-//	  Price vs MA20         ±1  (short-term trend)
-//	  60d trend             ±1  (broader momentum)
-//	  MA50 slope            ±2  (regime: rising vs declining MA50)
-//	  Price vs MA200        ±2  (long-term trend regime — v9)
+//	RSI extremes          ±1..3
+//	MACD histogram cross  ±3  (strongest signal)
+//	MACD histogram trend  ±1  (building momentum)
+//	Price vs MA50         ±1  (trend filter)
+//	Price vs MA20         ±1  (short-term trend)
+//	60d trend             ±1  (broader momentum)
+//	MA50 slope            ±2  (regime: rising vs declining MA50)
+//	Price vs MA200        ±2  (long-term trend regime)
 //
-//	Threshold: net score ≥ 6 required to fire BUY or SELL (configurable via Config.SignalThreshold)
+//	Threshold: configurable (default 6)
 //
-//	Additional gates (v8):
-//	  Volume filter:  CurVol < 70% AvgVol → no BUY (thin-volume day)
-//	  Weekly MACD:    weekly histogram < 0 → no BUY (weekly momentum bearish)
+//	Additional gates:
+//	  Volume filter:      CurVol < 70% AvgVol → no BUY
+//	  Weekly MACD:        weekly histogram < 0 → no BUY (bypassable for fast re-entry)
 //
-func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64, weeklyHist *float64, threshold int) string {
+// Hard gate: MA50 declining AND price below MA50 → skip to bear-only scoring.
+func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64, weeklyHist *float64, threshold int, bypassWeeklyGate bool) (string, int) {
 	if ind.RSI == nil || ind.MACD == nil || ind.MACD.Histogram == nil {
-		return "HOLD"
+		return "HOLD", 0
 	}
 	rsi := *ind.RSI
 	hist := *ind.MACD.Histogram
@@ -148,8 +160,6 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 	histFalling := hist < prevHist
 
 	// Hard gate: block BUY when MA50 is declining AND price is below it.
-	// A single bar of declining MA50 is enough — this catches prolonged downtrends
-	// (ORCL H2 2025, NVDA Q1 2025) while still allowing entries on any dip recovery.
 	if ind.MA50 != nil && prevMA50 > 0 {
 		if *ind.MA50 < prevMA50 && currentClose < *ind.MA50 {
 			goto computeSell
@@ -180,7 +190,6 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 		if macdCrossedDown {
 			bear += 3
 		}
-
 		if hist > 0 && histRising {
 			bull += 1
 		}
@@ -195,7 +204,6 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 				bear += 1
 			}
 		}
-
 		if ind.MA50 != nil && prevMA50 > 0 {
 			if *ind.MA50 > prevMA50 {
 				bull += 2
@@ -203,7 +211,6 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 				bear += 2
 			}
 		}
-
 		if ind.MA20 != nil {
 			if currentClose > *ind.MA20 {
 				bull += 1
@@ -211,7 +218,6 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 				bear += 1
 			}
 		}
-
 		if ind.Trend60d != nil {
 			if *ind.Trend60d > 5 {
 				bull += 1
@@ -219,8 +225,6 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 				bear += 1
 			}
 		}
-
-		// MA200: long-term trend regime — strongest regime filter (v9)
 		if ind.MA200 != nil {
 			if currentClose > *ind.MA200 {
 				bull += 2
@@ -230,27 +234,26 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64,
 		}
 
 		if bull >= threshold && bull > bear {
-			// Volume filter: skip thin-volume days — low participation means unreliable signal
+			// Volume filter: skip thin-volume days
 			if ind.CurVol != nil && ind.AvgVol != nil {
 				if *ind.CurVol < 0.7*float64(*ind.AvgVol) {
-					return "HOLD"
+					return "HOLD", 0
 				}
 			}
-			// Weekly MACD confirmation: require positive weekly momentum before entering
-			if weeklyHist != nil && *weeklyHist < 0 {
-				return "HOLD"
+			// Weekly MACD confirmation (bypassable for fast re-entry after trail-stop in uptrend)
+			if !bypassWeeklyGate && weeklyHist != nil && *weeklyHist < 0 {
+				return "HOLD", 0
 			}
-			return "BUY"
+			return "BUY", bull
 		}
 		if bear >= threshold && bear > bull {
-			return "SELL"
+			return "SELL", bear
 		}
-		return "HOLD"
+		return "HOLD", 0
 	}
 
 computeSell:
 	{
-		// In bear regime: only look for SELL signals (short exits or overbought)
 		var bear int
 		if rsi > 65 {
 			bear += 2
@@ -268,14 +271,13 @@ computeSell:
 			bear += 1
 		}
 		if bear >= 4 {
-			return "SELL"
+			return "SELL", bear
 		}
-		return "HOLD"
+		return "HOLD", 0
 	}
 }
 
-// buildSPYRegimeMap returns a date → isBullish map for every bar in the SPY candles.
-// A day is bullish when SPY close > SPY MA50.
+// buildSPYRegimeMap returns a date → isBullish map. A day is bullish when SPY close > SPY MA50.
 func buildSPYRegimeMap(candles indicators.Candles) map[string]bool {
 	result := make(map[string]bool, len(candles.T))
 	for i := 50; i < len(candles.C); i++ {
@@ -289,8 +291,7 @@ func buildSPYRegimeMap(candles indicators.Candles) map[string]bool {
 	return result
 }
 
-// resampleWeekly converts daily closes to weekly by taking every 5th bar.
-// The last bar is always included so the most recent week is represented.
+// resampleWeekly converts daily closes to weekly (every 5th bar, always including the last).
 func resampleWeekly(closes []float64) []float64 {
 	n := len(closes)
 	if n == 0 {
@@ -300,7 +301,6 @@ func resampleWeekly(closes []float64) []float64 {
 	for j := 4; j < n; j += 5 {
 		weekly = append(weekly, closes[j])
 	}
-	// Always include the latest bar to represent the current (partial) week
 	if (n-1)%5 != 4 {
 		weekly = append(weekly, closes[n-1])
 	}
@@ -328,10 +328,18 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	r.StartDate = barDate(0)
 	r.EndDate = barDate(n - 1)
 
-	// Resolve signal threshold — default to 6 if unset
+	// Resolve configurable parameters
 	sigThreshold := cfg.SignalThreshold
 	if sigThreshold <= 0 {
 		sigThreshold = 6
+	}
+	fastThreshold := cfg.FastReentryThreshold
+	if fastThreshold <= 0 {
+		fastThreshold = 4
+	}
+	fastWindow := cfg.FastReentryWindowBars
+	if fastWindow <= 0 {
+		fastWindow = 20
 	}
 
 	// Build SPY regime map if market candles provided
@@ -343,27 +351,32 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	// ── Indicator strategy simulation ────────────────────────────────
 
 	capital := cfg.InitialCapital
-	entryCapital := 0.0
-	entryPrice := 0.0
-	entryStopPrice := 0.0   // ATR-based stop price, set at trade entry
-	peakPriceInTrade := 0.0 // highest price seen while in trade, for trailing stop
-	entryBar := 0
-	entryMaxHold := cfg.MaxHoldDays // effective hold limit set at trade entry
+	// Trade state
 	inTrade := false
+	entryPrice := 0.0
+	entryCapital := 0.0  // portion of equity deployed in trade
+	cashReserve := 0.0   // portion held as cash during trade (position sizing)
+	entryStopPrice := 0.0
+	peakPriceInTrade := 0.0
+	trailingStopActive := false // once true, timeout is disabled
+	entryBar := 0
+	entryMaxHold := cfg.MaxHoldDays
+
+	// Re-entry tracking
+	lastExitReason := ""
+	lastExitBar := -999
+
 	peak := capital
 	maxDD := 0.0
 	var prevHist float64
-	var ma50Buf []float64 // rolling MA50 values to derive prevMA50 (10 bars back)
+	var ma50Buf []float64
 	var trades []Trade
+
 	equity := make([]float64, n)
-	// Pre-fill warm-up bars with initial capital so max drawdown isn't falsely 100%
-	// (bars 0..minBarsNeeded-1 are skipped by `continue` in the main loop, so they
-	// would stay at zero — causing peak=capital, trough=0 → 100% drawdown).
 	for i := range equity {
 		equity[i] = capital
 	}
 
-	// Reserve enough bars at the end for the longest possible trade to close
 	maxPossibleHold := int(float64(cfg.MaxHoldDays)*cfg.TrendExtendFactor*1.5) + 2
 	if cfg.TrendExtendFactor <= 0 {
 		maxPossibleHold = cfg.MaxHoldDays + 2
@@ -371,14 +384,15 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	lastSignalBar := n - maxPossibleHold - 2
 
 	for i := 1; i < n; i++ {
-		// Mark equity to market
+		// ── Mark equity to market ──────────────────────────────────────
 		if inTrade {
-			equity[i] = entryCapital * (closes[i] / entryPrice)
+			// position mark-to-market + held cash
+			equity[i] = cashReserve + entryCapital*(closes[i]/entryPrice)
 		} else {
 			equity[i] = equity[i-1]
 		}
 
-		// Update drawdown on current equity
+		// Update drawdown
 		if equity[i] > peak {
 			peak = equity[i]
 		}
@@ -386,6 +400,7 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 			maxDD = dd
 		}
 
+		// Warm-up and post-signal-range: update prevHist/ma50Buf but skip trade logic
 		if i < minBarsNeeded || i > lastSignalBar {
 			if i >= minBarsNeeded {
 				sub := subCandles(candles, i+1)
@@ -404,43 +419,73 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 		sub := subCandles(candles, i+1)
 		ind := indicators.ComputeAll(sub)
 
-		// prevMA50: MA50 value from 10 bars ago (tracks slope of the 50-day MA)
 		var prevMA50 float64
 		if len(ma50Buf) >= 10 {
 			prevMA50 = ma50Buf[len(ma50Buf)-10]
 		}
 
-		// Weekly MACD histogram: resample closes to weekly, compute MACD
 		var weeklyHist *float64
 		wcloses := resampleWeekly(closes[:i+1])
 		if wm := indicators.CalcMACD(wcloses); wm != nil && wm.Histogram != nil {
 			weeklyHist = wm.Histogram
 		}
 
-		sig := signal(ind, closes[i], prevHist, prevMA50, weeklyHist, sigThreshold)
+		// Determine effective threshold — fast re-entry after trail-stop in uptrend.
+		// Requires: within fastWindow bars, MA50 rising, price > MA200, AND price made a new 5-bar high
+		// (price at a local high, not in a topping/exhaustion pattern).
+		effectiveThreshold := sigThreshold
+		bypassWeeklyGate := false
+		if lastExitReason == "trail-stop" && i-lastExitBar <= fastWindow {
+			if ind.MA50 != nil && prevMA50 > 0 && *ind.MA50 > prevMA50 &&
+				ind.MA200 != nil && closes[i] > *ind.MA200 {
+				// Require price to have made a new 5-bar high
+				lookback := 5
+				if i >= lookback {
+					recent5High := closes[i-lookback]
+					for k := i - lookback + 1; k < i; k++ {
+						if closes[k] > recent5High {
+							recent5High = closes[k]
+						}
+					}
+					if closes[i] >= recent5High {
+						effectiveThreshold = fastThreshold
+						bypassWeeklyGate = true
+					}
+				}
+			}
+		}
+
+		sig, score := signal(ind, closes[i], prevHist, prevMA50, weeklyHist, effectiveThreshold, bypassWeeklyGate)
 
 		// SPY regime filter: block new BUY entries when market is in a downtrend
 		if sig == "BUY" && spyBull != nil {
 			date := barDate(i)
 			if bull, ok := spyBull[date]; ok && !bull {
 				sig = "HOLD"
+				score = 0
 			}
 		}
 
+		// ── Entry ──────────────────────────────────────────────────────
 		if !inTrade && sig == "BUY" {
+			totalAvail := equity[i]
+			sizeFactor := signalSizeFactor(score)
+			entryCapital = totalAvail * sizeFactor
+			cashReserve = totalAvail - entryCapital
+
 			inTrade = true
 			entryPrice = closes[i]
-			entryCapital = equity[i]
 			entryBar = i
 			peakPriceInTrade = closes[i]
-			entryMaxHold = tradeMaxHold(ind, cfg) // set hold limit based on trend at entry
-			// ATR-based stop: exit if price drops more than N×ATR14 below entry
+			trailingStopActive = false
+			entryMaxHold = tradeMaxHold(ind, cfg)
 			entryStopPrice = 0
 			if cfg.StopLossATRMultiple > 0 && ind.ATR14 != nil {
 				entryStopPrice = entryPrice - cfg.StopLossATRMultiple**ind.ATR14
 			}
+
 		} else if inTrade {
-			// Update peak price for trailing stop
+			// Update trailing peak
 			if closes[i] > peakPriceInTrade {
 				peakPriceInTrade = closes[i]
 			}
@@ -448,10 +493,11 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 			holdDays := i - entryBar
 			exitReason := ""
 
-			// Trailing stop — kicks in once trade has gained 7%+ from entry (v9: lowered from 10%).
+			// Trailing stop — activates once trade is up 7%+ from entry
 			if cfg.TrailingStopATRMultiple > 0 && ind.ATR14 != nil && holdDays >= cfg.MinHoldDays {
 				profitFromEntry := (peakPriceInTrade - entryPrice) / entryPrice * 100
 				if profitFromEntry >= 7.0 {
+					trailingStopActive = true
 					trailingStop := peakPriceInTrade - cfg.TrailingStopATRMultiple**ind.ATR14
 					if closes[i] < trailingStop {
 						exitReason = "trail-stop"
@@ -459,21 +505,22 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 				}
 			}
 
-			// Entry stop-loss — ATR-based: exit if price fell below computed stop level
+			// Entry stop-loss
 			if exitReason == "" && entryStopPrice > 0 && holdDays >= cfg.MinHoldDays && closes[i] < entryStopPrice {
 				exitReason = "stop-loss"
 			}
-			// SELL signal — only respect after MinHoldDays
+			// SELL signal
 			if exitReason == "" && holdDays >= cfg.MinHoldDays && sig == "SELL" {
 				exitReason = "signal"
 			}
-			// Timeout — use the dynamic hold limit set at entry
-			if exitReason == "" && holdDays >= entryMaxHold {
+			// Timeout — ONLY fires if trailing stop has never activated.
+			// Once the trailing stop is active, we let winners run until the trail catches them.
+			if exitReason == "" && !trailingStopActive && holdDays >= entryMaxHold {
 				exitReason = "timeout"
 			}
+
 			if exitReason != "" {
 				retPct := (closes[i] - entryPrice) / entryPrice * 100
-				// Realise P&L: equity[i] already reflects this via mark-to-market
 				capital = equity[i]
 				trades = append(trades, Trade{
 					EntryDate:  barDate(entryBar),
@@ -485,8 +532,9 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 					ExitReason: exitReason,
 				})
 				inTrade = false
-				entryPrice = 0
-				entryCapital = 0
+				lastExitReason = exitReason
+				lastExitBar = i
+				entryPrice, entryCapital, cashReserve = 0, 0, 0
 			}
 		}
 
@@ -501,11 +549,10 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	}
 
 	// Close any open position at end of data
-
 	if inTrade && n > 0 {
 		exitPrice := closes[n-1]
 		retPct := (exitPrice - entryPrice) / entryPrice * 100
-		capital = entryCapital * (exitPrice / entryPrice)
+		capital = equity[n-1]
 		trades = append(trades, Trade{
 			EntryDate:  barDate(entryBar),
 			ExitDate:   barDate(n - 1),
@@ -546,7 +593,6 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	}
 	r.SharpeRatio = round2(sharpe(equity))
 
-	// ── Memory / Claude accuracy evaluation ──────────────────────────
 	if len(memEntries) > 0 {
 		r.Memory = evaluateMemory(memEntries, candles)
 	}
@@ -556,7 +602,6 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 
 // evaluateMemory checks each stored Claude decision against actual forward prices.
 func evaluateMemory(entries []memory.Entry, candles indicators.Candles) *MemoryEval {
-	// Build date → bar index map (YYYY-MM-DD → i)
 	dateIndex := make(map[string]int, len(candles.T))
 	for i, ts := range candles.T {
 		day := time.Unix(ts, 0).UTC().Format("2006-01-02")
@@ -599,7 +644,7 @@ func evaluateMemory(entries []memory.Entry, candles indicators.Candles) *MemoryE
 		case "SELL":
 			correct = fwdPrice < entryPrice
 		case "HOLD":
-			correct = math.Abs(retPct) <= 3.0 // ±3% accounts for normal daily noise
+			correct = math.Abs(retPct) <= 3.0
 		}
 
 		stat, exists := eval.ByDecision[e.Decision]
@@ -611,12 +656,10 @@ func evaluateMemory(entries []memory.Entry, candles indicators.Candles) *MemoryE
 		if correct {
 			stat.Correct++
 		}
-
 		eval.Total++
 		if correct {
 			eval.Correct++
 		}
-
 		eval.Details = append(eval.Details, MemoryDecision{
 			Date:      day,
 			Decision:  e.Decision,
@@ -643,7 +686,6 @@ func Print(r Result) {
 	fmt.Printf("  BACKTEST  %-6s  %s → %s  (%d bars)\n", r.Ticker, r.StartDate, r.EndDate, r.TotalBars)
 	fmt.Printf("%s\n", sep)
 
-	// Strategy vs buy-and-hold
 	stratSign := "+"
 	if r.TotalReturn < 0 {
 		stratSign = ""
@@ -662,7 +704,6 @@ func Print(r Result) {
 	fmt.Printf("  Alpha:             %s%.2f%%\n", alphaSign, alpha)
 	fmt.Println()
 
-	// Trade stats
 	fmt.Printf("  Trades:            %d  (W:%d / L:%d)\n", r.TotalTrades, r.WinningTrades, r.LosingTrades)
 	fmt.Printf("  Win rate:          %.1f%%\n", r.WinRate)
 	fmt.Printf("  Avg win:           +%.2f%%\n", r.AvgWinPct)
@@ -671,7 +712,6 @@ func Print(r Result) {
 	fmt.Printf("  Sharpe ratio:      %.2f\n", r.SharpeRatio)
 	fmt.Println()
 
-	// Individual trades
 	if len(r.Trades) > 0 {
 		fmt.Printf("  %-12s %-12s %-8s %-8s %-8s %-4s  %s\n",
 			"Entry", "Exit", "Buy@", "Sell@", "Return", "Days", "Exit")
@@ -689,7 +729,6 @@ func Print(r Result) {
 		fmt.Println()
 	}
 
-	// Claude memory accuracy
 	if r.Memory != nil && r.Memory.Total > 0 {
 		m := r.Memory
 		fmt.Printf("%s\n", sep)
@@ -750,7 +789,7 @@ func sharpe(equity []float64) float64 {
 		return 0
 	}
 	mean := avg(returns)
-	rfr := 0.05 / 252 // 5% annual risk-free rate
+	rfr := 0.05 / 252
 	excess := mean - rfr
 	variance := 0.0
 	for _, r := range returns {

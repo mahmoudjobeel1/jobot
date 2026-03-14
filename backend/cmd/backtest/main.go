@@ -36,6 +36,7 @@ func main() {
 	capital   := flag.Float64("capital", 10_000, "Initial capital in USD (default: 10000)")
 	nospy     := flag.Bool("nospy", false, "Disable SPY regime filter")
 	threshold := flag.Int("threshold", 0, "Bull/bear score threshold to fire a signal (default: 6, 0=use default)")
+	skipFlag  := flag.String("skip", "", "Comma-separated tickers to exclude (e.g. AMZN,AAPL)")
 	flag.Parse()
 
 	if !*allFlag && *tickerFlag == "" {
@@ -43,9 +44,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	skipSet := map[string]bool{}
+	for _, s := range strings.Split(*skipFlag, ",") {
+		t := strings.TrimSpace(strings.ToUpper(s))
+		if t != "" {
+			skipSet[t] = true
+		}
+	}
+
 	tickers := config.Tickers
 	if !*allFlag {
 		tickers = []string{strings.ToUpper(*tickerFlag)}
+	}
+	if len(skipSet) > 0 {
+		filtered := tickers[:0]
+		for _, t := range tickers {
+			if !skipSet[t] {
+				filtered = append(filtered, t)
+			}
+		}
+		tickers = filtered
 	}
 
 	cfg := backtester.Config{
@@ -74,7 +92,7 @@ func main() {
 
 	thr := *threshold
 	if thr <= 0 {
-		thr = 7
+		thr = 6
 	}
 	fmt.Printf("\n  Backtest  |  %d months  |  hold %d–%d days  |  stop %.1fx ATR  |  trail %.1fx ATR  |  extend %.1fx  |  capital $%.0f  |  threshold %d  |  %s\n",
 		*months, *minhold, *hold, *atrMult, *trail, *extend, *capital, thr, spyLabel)

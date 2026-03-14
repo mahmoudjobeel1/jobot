@@ -15,6 +15,7 @@ type Indicators struct {
 	CurVol   *float64    `json:"curVol"`
 	Trend60d *float64    `json:"trend60d"`
 	ATR14    *float64    `json:"atr14"`
+	ADX14    *float64    `json:"adx14"` // Average Directional Index (trend strength 0–100; >25 = trending)
 }
 
 // Candles holds the OHLCV data from Yahoo Finance.
@@ -174,6 +175,74 @@ func CalcATR(highs, lows, closes []float64, period int) *float64 {
 	return &result
 }
 
+// CalcADX computes the Average Directional Index (trend strength) using Wilder's smoothing.
+// ADX > 25 indicates a trending market; ADX < 20 indicates a ranging market.
+// Returns nil when there is insufficient data.
+func CalcADX(candles Candles, period int) *float64 {
+	n := len(candles.C)
+	if n < period*2+2 || len(candles.H) != n || len(candles.L) != n {
+		return nil
+	}
+
+	tr := make([]float64, n)
+	plusDM := make([]float64, n)
+	minusDM := make([]float64, n)
+	for i := 1; i < n; i++ {
+		hl := candles.H[i] - candles.L[i]
+		hpc := math.Abs(candles.H[i] - candles.C[i-1])
+		lpc := math.Abs(candles.L[i] - candles.C[i-1])
+		tr[i] = math.Max(hl, math.Max(hpc, lpc))
+		up := candles.H[i] - candles.H[i-1]
+		down := candles.L[i-1] - candles.L[i]
+		if up > down && up > 0 {
+			plusDM[i] = up
+		}
+		if down > up && down > 0 {
+			minusDM[i] = down
+		}
+	}
+
+	// Seed Wilder smoothed TR/DM using first `period` bars
+	aTR, aPDM, aNDM := 0.0, 0.0, 0.0
+	for i := 1; i <= period; i++ {
+		aTR += tr[i]
+		aPDM += plusDM[i]
+		aNDM += minusDM[i]
+	}
+
+	// Compute DX for each bar and smooth into ADX
+	dx := make([]float64, n)
+	calcDX := func(tr, pdm, ndm float64) float64 {
+		if tr == 0 {
+			return 0
+		}
+		pdi, ndi := pdm/tr*100, ndm/tr*100
+		if pdi+ndi == 0 {
+			return 0
+		}
+		return math.Abs(pdi-ndi) / (pdi + ndi) * 100
+	}
+	dx[period] = calcDX(aTR, aPDM, aNDM)
+	for i := period + 1; i < n; i++ {
+		aTR = aTR - aTR/float64(period) + tr[i]
+		aPDM = aPDM - aPDM/float64(period) + plusDM[i]
+		aNDM = aNDM - aNDM/float64(period) + minusDM[i]
+		dx[i] = calcDX(aTR, aPDM, aNDM)
+	}
+
+	// Seed ADX from the first `period` DX values
+	adxSeed := 0.0
+	for i := period; i < period*2 && i < n; i++ {
+		adxSeed += dx[i]
+	}
+	adx := adxSeed / float64(period)
+	for i := period * 2; i < n; i++ {
+		adx = (adx*float64(period-1) + dx[i]) / float64(period)
+	}
+	result := roundTo(adx, 2)
+	return &result
+}
+
 // ComputeAll computes all technical indicators from the candle data.
 func ComputeAll(candles Candles) Indicators {
 	closes := candles.C
@@ -187,6 +256,7 @@ func ComputeAll(candles Candles) Indicators {
 		MA200:  CalcSMA(closes, 200),
 		AvgVol: CalcAvgVolume(volumes, 20),
 		ATR14:  CalcATR(candles.H, candles.L, closes, 14),
+		ADX14:  CalcADX(candles, 14),
 	}
 
 	if len(volumes) > 0 {
@@ -202,6 +272,34 @@ func ComputeAll(candles Candles) Indicators {
 	}
 
 	return ind
+}
+
+// Regime classifies the current market regime for a ticker.
+type Regime string
+
+const (
+	RegimeTrending Regime = "TRENDING"  // ADX > 25 and price > MA200
+	RegimeBearish  Regime = "BEARISH"   // price < MA200 with declining MA50
+	RegimeSideways Regime = "SIDEWAYS"  // ADX < 20 or no clear trend
+)
+
+// ClassifyRegime returns the current regime based on ADX14 and MA200.
+func ClassifyRegime(ind Indicators, currentPrice float64) Regime {
+	if ind.ADX14 == nil || ind.MA200 == nil {
+		return RegimeSideways
+	}
+	aboveMA200 := currentPrice > *ind.MA200
+	trending := *ind.ADX14 > 25
+
+	if trending && aboveMA200 {
+		return RegimeTrending
+	}
+	if !aboveMA200 {
+		if ind.MA50 != nil && *ind.MA50 < *ind.MA200 {
+			return RegimeBearish
+		}
+	}
+	return RegimeSideways
 }
 
 func roundTo(v float64, decimals int) float64 {

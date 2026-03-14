@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"jobot/internal/config"
 	"jobot/internal/memory"
 	"jobot/internal/store"
 )
@@ -93,10 +94,12 @@ func handlePortfolio(w http.ResponseWriter, r *http.Request) {
 // ─── /orders ─────────────────────────────────────────────────────────────────
 
 type orderRequest struct {
-	Type   string  `json:"type"`   // "buy" | "sell" | "stop_loss"
-	Ticker string  `json:"ticker"`
-	Qty    float64 `json:"qty"`
-	Price  float64 `json:"price"` // execution price for buy/sell; stop price for stop_loss
+	Type       string  `json:"type"`        // "buy" | "sell" | "stop_loss" | "trailing_stop"
+	Ticker     string  `json:"ticker"`
+	Qty        float64 `json:"qty"`
+	Price      float64 `json:"price"`       // execution price for buy/sell; stop price for stop_loss
+	EntryPrice float64 `json:"entry_price"` // for trailing_stop: original buy price
+	ATR14      float64 `json:"atr14"`       // for trailing_stop: current ATR14
 }
 
 func handleOrders(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +139,17 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, err = store.AddStop(req.Ticker, req.Qty, req.Price)
+	case "trailing_stop":
+		if req.EntryPrice <= 0 {
+			http.Error(w, "entry_price required for trailing_stop", http.StatusBadRequest)
+			return
+		}
+		if req.ATR14 <= 0 {
+			http.Error(w, "atr14 required for trailing_stop", http.StatusBadRequest)
+			return
+		}
+		_, err = store.AddTrailingStop(req.Ticker, req.Qty, req.EntryPrice, req.ATR14,
+			config.TrailATRMultiplier, config.TrailActivatePct)
 	default:
 		http.Error(w, fmt.Sprintf("unknown order type %q", req.Type), http.StatusBadRequest)
 		return

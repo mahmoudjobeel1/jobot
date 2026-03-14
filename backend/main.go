@@ -48,6 +48,30 @@ func processTicker(ticker string) tickerResult {
 		fmt.Printf("  [ERROR] %s: %v\n", ticker, err)
 		return tickerResult{ticker: ticker, ok: false, errMsg: err.Error()}
 	}
+
+	// ── Check and update all trailing stops for this ticker ──────────
+	currentPrice := data.Quote.C
+	for _, s := range store.GetStops() {
+		if !s.IsTrailing || !strings.EqualFold(s.Ticker, ticker) {
+			continue
+		}
+		triggered, err := store.UpdateTrailingStop(s.ID, currentPrice)
+		if err != nil {
+			fmt.Printf("  [Stop] %s update error: %v\n", ticker, err)
+			continue
+		}
+		if triggered {
+			fmt.Printf("  [Stop] TRAILING STOP TRIGGERED — %s at $%.2f (stop $%.2f, peak $%.2f)\n",
+				ticker, currentPrice, s.StopPrice, s.PeakPrice)
+			if err := store.ExecuteStop(s.ID); err != nil {
+				fmt.Printf("  [Stop] Execute error for %s: %v\n", ticker, err)
+			}
+		} else if s.Activated {
+			fmt.Printf("  [Stop] %s trailing stop: price $%.2f | stop $%.2f | peak $%.2f\n",
+				ticker, currentPrice, s.StopPrice, s.PeakPrice)
+		}
+	}
+
 	result, err := analyst.AnalyzeStock(ticker, data.Quote, data.Candles, data.News)
 	if err != nil {
 		fmt.Printf("  [ERROR] %s: %v\n", ticker, err)

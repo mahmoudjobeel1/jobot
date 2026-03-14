@@ -5,6 +5,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,14 +20,34 @@ type Holding struct {
 	AvgCost float64 `json:"avg_cost"`
 }
 
-// StopOrder represents a pending stop-loss order.
+// StopOrder represents a pending stop-loss order (static or trailing).
 type StopOrder struct {
 	ID        string  `json:"id"`
 	Ticker    string  `json:"ticker"`
 	Qty       float64 `json:"qty"`
 	StopPrice float64 `json:"stop_price"`
 	CreatedAt string  `json:"created_at"`
+
+	// Trailing stop fields (zero-value = static stop)
+	IsTrailing bool    `json:"is_trailing"`
+	EntryPrice float64 `json:"entry_price"`    // original buy price
+	PeakPrice  float64 `json:"peak_price"`     // highest price seen since entry
+	TrailATR   float64 `json:"trail_atr"`      // ATR14 captured at entry
+	TrailMult  float64 `json:"trail_mult"`     // multiplier (1.5× from config)
+	ActivateAt float64 `json:"activate_at_pct"` // profit % required to engage trailing
+	Activated  bool    `json:"activated"`       // true once trailing mode is engaged
 }
+
+// TrailExitRecord tracks a recent trailing-stop exit for fast-re-entry logic.
+// Stored in memory only — intentionally resets on restart.
+type TrailExitRecord struct {
+	Ticker    string  `json:"ticker"`
+	ExitPrice float64 `json:"exit_price"`
+	ExitDate  string  `json:"exit_date"`
+	PeakPrice float64 `json:"peak_price"`
+}
+
+var recentTrailExits []TrailExitRecord
 
 var (
 	mu            sync.RWMutex
@@ -175,6 +196,141 @@ func AddStop(ticker string, qty, stopPrice float64) (StopOrder, error) {
 	return s, writeStops()
 }
 
+// AddTrailingStop creates a trailing stop order using ATR-based parameters.
+// The initial stop-loss is set at entry - 2.5×ATR. Trailing activates once
+// the trade gains max(7%, 2×ATR%) from entry.
+func AddTrailingStop(ticker string, qty, entryPrice, atr14, trailMult, activatePct float64) (StopOrder, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	ticker = strings.ToUpper(ticker)
+
+	var held float64
+	for _, h := range holdings {
+		if strings.EqualFold(h.Ticker, ticker) {
+			held = h.Qty
+			break
+		}
+	}
+	if held < qty {
+		return StopOrder{}, fmt.Errorf("insufficient shares: hold %.4g, stop qty %.4g", held, qty)
+	}
+
+	// Initial stop 2.5×ATR below entry; trailing activates at max(7%, 2×ATR%)
+	initialStop := entryPrice - (2.5 * atr14)
+	atrPct := (atr14 / entryPrice) * 100
+	if activatePct <= 0 {
+		activatePct = math.Max(7.0, 2.0*atrPct)
+	}
+	if trailMult <= 0 {
+		trailMult = 1.5
+	}
+
+	s := StopOrder{
+		ID:         fmt.Sprintf("trail_%d", time.Now().UnixNano()),
+		Ticker:     ticker,
+		Qty:        qty,
+		StopPrice:  initialStop,
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		IsTrailing: true,
+		EntryPrice: entryPrice,
+		PeakPrice:  entryPrice,
+		TrailATR:   atr14,
+		TrailMult:  trailMult,
+		ActivateAt: activatePct,
+		Activated:  false,
+	}
+	stops = append(stops, s)
+	return s, writeStops()
+}
+
+// UpdateTrailingStop advances the trailing stop for the given stop ID using
+// the current market price. Returns (triggered, error).
+// Call this every analysis cycle for each active trailing stop.
+func UpdateTrailingStop(id string, currentPrice float64) (triggered bool, err error) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	for i, s := range stops {
+		if s.ID != id || !s.IsTrailing {
+			continue
+		}
+
+		// Ratchet peak upward
+		if currentPrice > stops[i].PeakPrice {
+			stops[i].PeakPrice = currentPrice
+		}
+
+		gainPct := (currentPrice - s.EntryPrice) / s.EntryPrice * 100
+
+		if !s.Activated {
+			// Not yet in trailing mode — check static initial stop
+			if currentPrice <= s.StopPrice {
+				return true, writeStops()
+			}
+			// Activate trailing once gain threshold is reached
+			if gainPct >= s.ActivateAt {
+				stops[i].Activated = true
+				newStop := stops[i].PeakPrice - (s.TrailATR * s.TrailMult)
+				if newStop > stops[i].StopPrice {
+					stops[i].StopPrice = newStop
+				}
+			}
+			return false, writeStops()
+		}
+
+		// Trailing mode: ratchet stop up with peak, never down
+		newStop := stops[i].PeakPrice - (s.TrailATR * s.TrailMult)
+		if newStop > stops[i].StopPrice {
+			stops[i].StopPrice = newStop
+		}
+
+		if currentPrice <= stops[i].StopPrice {
+			return true, writeStops()
+		}
+		return false, writeStops()
+	}
+	return false, fmt.Errorf("trailing stop %s not found", id)
+}
+
+// RecordTrailExit stores a trail-stop exit for fast-re-entry context.
+func RecordTrailExit(ticker string, exitPrice, peakPrice float64) {
+	mu.Lock()
+	defer mu.Unlock()
+	recentTrailExits = append(recentTrailExits, TrailExitRecord{
+		Ticker:    strings.ToUpper(ticker),
+		ExitPrice: exitPrice,
+		ExitDate:  time.Now().UTC().Format(time.RFC3339),
+		PeakPrice: peakPrice,
+	})
+	// Keep only the last 50 exits
+	if len(recentTrailExits) > 50 {
+		recentTrailExits = recentTrailExits[len(recentTrailExits)-50:]
+	}
+}
+
+// RecentTrailExit returns the most recent trail-stop exit for a ticker
+// within the last withinDays calendar days, or nil if none.
+func RecentTrailExit(ticker string, withinDays int) *TrailExitRecord {
+	mu.RLock()
+	defer mu.RUnlock()
+	cutoff := time.Now().AddDate(0, 0, -withinDays)
+	ticker = strings.ToUpper(ticker)
+	for i := len(recentTrailExits) - 1; i >= 0; i-- {
+		r := recentTrailExits[i]
+		if r.Ticker != ticker {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, r.ExitDate)
+		if err != nil {
+			continue
+		}
+		if t.After(cutoff) {
+			return &r
+		}
+	}
+	return nil
+}
+
 // GetStops returns a copy of all stop-loss orders.
 func GetStops() []StopOrder {
 	mu.RLock()
@@ -198,6 +354,7 @@ func DeleteStop(id string) error {
 }
 
 // ExecuteStop sells the shares for a stop order and removes it.
+// For trailing stops, also records a TrailExitRecord for fast-re-entry context.
 func ExecuteStop(id string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -227,6 +384,16 @@ func ExecuteStop(id string) error {
 		}
 	}
 	stops = append(stops[:stopIdx], stops[stopIdx+1:]...)
+
+	// Record trail exit for fast re-entry context (no lock needed — already held)
+	if s.IsTrailing && s.Activated {
+		recentTrailExits = append(recentTrailExits, TrailExitRecord{
+			Ticker:    s.Ticker,
+			ExitPrice: s.StopPrice,
+			ExitDate:  time.Now().UTC().Format(time.RFC3339),
+			PeakPrice: s.PeakPrice,
+		})
+	}
 
 	if err := writePortfolio(); err != nil {
 		return err
