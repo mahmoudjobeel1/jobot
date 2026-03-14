@@ -20,6 +20,7 @@ type Config struct {
 	TrailingStopATRMultiple float64 // once trade up 10%+, trail stop at peak - N×ATR14 (0 = disabled)
 	TrendExtendFactor       float64 // multiplier on MaxHoldDays when Trend60d is strong (0 = disabled)
 	InitialCapital          float64
+	MarketCandles           *indicators.Candles // SPY candles for market regime filter (nil = disabled)
 }
 
 // DefaultConfig returns sensible defaults.
@@ -27,8 +28,8 @@ func DefaultConfig() Config {
 	return Config{
 		MaxHoldDays:             10,
 		MinHoldDays:             2,
-		StopLossATRMultiple:     2.0, // stop out when price drops 2×ATR14 from entry
-		TrailingStopATRMultiple: 1.5, // once up 10%, trail at peak - 1.5×ATR14
+		StopLossATRMultiple:     2.5, // stop out when price drops 2.5×ATR14 from entry (v9: widened from 2.0)
+		TrailingStopATRMultiple: 1.5, // once up 7%, trail at peak - 1.5×ATR14
 		TrendExtendFactor:       2.0,
 		InitialCapital:          10_000,
 	}
@@ -125,10 +126,15 @@ type Result struct {
 //	  Price vs MA20         ±1  (short-term trend)
 //	  60d trend             ±1  (broader momentum)
 //	  MA50 slope            ±2  (regime: rising vs declining MA50)
+//	  Price vs MA200        ±2  (long-term trend regime — v9)
 //
-//	Threshold: net score ≥ 6 required to fire BUY or SELL
+//	Threshold: net score ≥ 7 required to fire BUY or SELL (raised from 6 in v9)
 //
-func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64) string {
+//	Additional gates (v8):
+//	  Volume filter:  CurVol < 70% AvgVol → no BUY (thin-volume day)
+//	  Weekly MACD:    weekly histogram < 0 → no BUY (weekly momentum bearish)
+//
+func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64, weeklyHist *float64) string {
 	if ind.RSI == nil || ind.MACD == nil || ind.MACD.Histogram == nil {
 		return "HOLD"
 	}
@@ -213,8 +219,27 @@ func signal(ind indicators.Indicators, currentClose, prevHist, prevMA50 float64)
 			}
 		}
 
-		const threshold = 6
+		// MA200: long-term trend regime — strongest regime filter (v9)
+		if ind.MA200 != nil {
+			if currentClose > *ind.MA200 {
+				bull += 2
+			} else {
+				bear += 2
+			}
+		}
+
+		const threshold = 7
 		if bull >= threshold && bull > bear {
+			// Volume filter: skip thin-volume days — low participation means unreliable signal
+			if ind.CurVol != nil && ind.AvgVol != nil {
+				if *ind.CurVol < 0.7*float64(*ind.AvgVol) {
+					return "HOLD"
+				}
+			}
+			// Weekly MACD confirmation: require positive weekly momentum before entering
+			if weeklyHist != nil && *weeklyHist < 0 {
+				return "HOLD"
+			}
 			return "BUY"
 		}
 		if bear >= threshold && bear > bull {
@@ -249,6 +274,39 @@ computeSell:
 	}
 }
 
+// buildSPYRegimeMap returns a date → isBullish map for every bar in the SPY candles.
+// A day is bullish when SPY close > SPY MA50.
+func buildSPYRegimeMap(candles indicators.Candles) map[string]bool {
+	result := make(map[string]bool, len(candles.T))
+	for i := 50; i < len(candles.C); i++ {
+		sub := subCandles(candles, i+1)
+		ind := indicators.ComputeAll(sub)
+		day := time.Unix(candles.T[i], 0).UTC().Format("2006-01-02")
+		if ind.MA50 != nil {
+			result[day] = candles.C[i] > *ind.MA50
+		}
+	}
+	return result
+}
+
+// resampleWeekly converts daily closes to weekly by taking every 5th bar.
+// The last bar is always included so the most recent week is represented.
+func resampleWeekly(closes []float64) []float64 {
+	n := len(closes)
+	if n == 0 {
+		return nil
+	}
+	var weekly []float64
+	for j := 4; j < n; j += 5 {
+		weekly = append(weekly, closes[j])
+	}
+	// Always include the latest bar to represent the current (partial) week
+	if (n-1)%5 != 4 {
+		weekly = append(weekly, closes[n-1])
+	}
+	return weekly
+}
+
 // Run executes the backtest and returns full metrics.
 func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, cfg Config) Result {
 	closes := candles.C
@@ -270,6 +328,12 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	r.StartDate = barDate(0)
 	r.EndDate = barDate(n - 1)
 
+	// Build SPY regime map if market candles provided
+	var spyBull map[string]bool
+	if cfg.MarketCandles != nil {
+		spyBull = buildSPYRegimeMap(*cfg.MarketCandles)
+	}
+
 	// ── Indicator strategy simulation ────────────────────────────────
 
 	capital := cfg.InitialCapital
@@ -286,7 +350,12 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 	var ma50Buf []float64 // rolling MA50 values to derive prevMA50 (10 bars back)
 	var trades []Trade
 	equity := make([]float64, n)
-	equity[0] = capital
+	// Pre-fill warm-up bars with initial capital so max drawdown isn't falsely 100%
+	// (bars 0..minBarsNeeded-1 are skipped by `continue` in the main loop, so they
+	// would stay at zero — causing peak=capital, trough=0 → 100% drawdown).
+	for i := range equity {
+		equity[i] = capital
+	}
 
 	// Reserve enough bars at the end for the longest possible trade to close
 	maxPossibleHold := int(float64(cfg.MaxHoldDays)*cfg.TrendExtendFactor*1.5) + 2
@@ -335,7 +404,22 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 			prevMA50 = ma50Buf[len(ma50Buf)-10]
 		}
 
-		sig := signal(ind, closes[i], prevHist, prevMA50)
+		// Weekly MACD histogram: resample closes to weekly, compute MACD
+		var weeklyHist *float64
+		wcloses := resampleWeekly(closes[:i+1])
+		if wm := indicators.CalcMACD(wcloses); wm != nil && wm.Histogram != nil {
+			weeklyHist = wm.Histogram
+		}
+
+		sig := signal(ind, closes[i], prevHist, prevMA50, weeklyHist)
+
+		// SPY regime filter: block new BUY entries when market is in a downtrend
+		if sig == "BUY" && spyBull != nil {
+			date := barDate(i)
+			if bull, ok := spyBull[date]; ok && !bull {
+				sig = "HOLD"
+			}
+		}
 
 		if !inTrade && sig == "BUY" {
 			inTrade = true
@@ -358,10 +442,10 @@ func Run(ticker string, candles indicators.Candles, memEntries []memory.Entry, c
 			holdDays := i - entryBar
 			exitReason := ""
 
-			// Trailing stop — kicks in once trade has gained 10%+ from entry.
+			// Trailing stop — kicks in once trade has gained 7%+ from entry (v9: lowered from 10%).
 			if cfg.TrailingStopATRMultiple > 0 && ind.ATR14 != nil && holdDays >= cfg.MinHoldDays {
 				profitFromEntry := (peakPriceInTrade - entryPrice) / entryPrice * 100
-				if profitFromEntry >= 10.0 {
+				if profitFromEntry >= 7.0 {
 					trailingStop := peakPriceInTrade - cfg.TrailingStopATRMultiple**ind.ATR14
 					if closes[i] < trailingStop {
 						exitReason = "trail-stop"
